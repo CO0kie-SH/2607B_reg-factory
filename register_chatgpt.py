@@ -146,15 +146,27 @@ async def dismiss_cookie_banner(page):
     return False
 
 
-async def fill_email_verified(page, email_input, email, tries=3):
+async def fill_email_verified(page, email_input, email, tries=4):
     """填邮箱（React 受控输入：键盘逐字+JS setter 兜底，见 common.browser.react_fill）。
-    fill() 只改 DOM .value 不触发 React onChange -> 提交空邮箱 ?email=。每轮失败先关 cookie 横幅再试。"""
+    fill() 只改 DOM .value 不触发 React onChange -> 提交空邮箱 ?email=。
+
+    坑：cookie 同意横幅常在打开页面后、填邮箱当下才异步弹出，盖住输入框抢焦点：
+    键盘输入落空（React onChange 收不到值），但 JS setter 兜底把 DOM .value 写进去了
+    -> react_fill 回读 input_value() 匹配 -> 误报成功 -> 不重试不关横幅 -> 空提交。
+    所以这里每轮**先关横幅再填**，填完若横幅仍在则再关一次并重填。"""
     sel = 'input[type="email"], input[name="email"]'
     for i in range(tries):
-        if await react_fill(page, sel, email, tries=1, verbose=False):
-            return True
-        print(f"  [2] email not committed, retry {i+1}/{tries}")
+        # 先关横幅（可能这轮才弹出来），再填——避免横幅抢焦点导致键盘输入落空
         await dismiss_cookie_banner(page)
+        if await react_fill(page, sel, email, tries=2, verbose=False):
+            # 二次确认：横幅若此刻才冒出来盖住，关掉它并回读校验，防 setter 误报
+            await dismiss_cookie_banner(page)
+            try:
+                if (await page.locator(sel).first.input_value()).strip() == email:
+                    return True
+            except Exception:
+                return True
+        print(f"  [2] email not committed, retry {i+1}/{tries}")
         await asyncio.sleep(1)
     return False
 
@@ -253,6 +265,14 @@ async def register_one(index, total, p):
         # 填后回读校验：没真正进去就重填，避免空提交
         if not await fill_email_verified(page, email_input, email):
             print("  [2] email fill failed after retries")
+        # 提交前最后一道：关横幅（可能此刻才弹），并回读确认邮箱真在框里，否则再补填一次
+        await dismiss_cookie_banner(page)
+        try:
+            if (await email_input.input_value()).strip() != email:
+                print("  [2] email empty before submit, refilling once...")
+                await fill_email_verified(page, email_input, email, tries=2)
+        except Exception:
+            pass
         # 提交：按钮文本中/英/日多语言精确匹配，避免点到 Continue with Google/Apple
         if not await click_any_exact(page, ["Continue", "続行", "继续", "繼續", "Next", "下一步", "Teruskan"]):
             sub = page.locator('button[type="submit"]')
@@ -529,16 +549,17 @@ async def handle_onboarding(page, index, max_rounds=6):
         if on_about_you:
             if not name_done and await page.locator(name_sel).count() > 0:
                 first, last = rand_name()
-                if await react_fill(page, name_sel, f"{first} {last}", tries=2, verbose=False):
+                # delay 调低：名字/年龄是 onboarding 的本地字段，不像邮箱要防风控，快点键入即可
+                if await react_fill(page, name_sel, f"{first} {last}", tries=2, delay=12, verbose=False):
                     print(f"  [onboarding] name: {first} {last}")
                     name_done = True
                     await blur_field(page, name_sel)
-                    await asyncio.sleep(0.5)
-            if await react_fill(page, age_sel, str(random.randint(18, 40)), tries=2, verbose=False):
+                    await asyncio.sleep(0.2)
+            if await react_fill(page, age_sel, str(random.randint(18, 40)), tries=2, delay=12, verbose=False):
                 print("  [onboarding] age filled")
                 # 关键：失焦让 onBlur 校验跑起来，Finish 按钮才会解除 disabled
                 await blur_field(page, age_sel)
-                await asyncio.sleep(0.8)
+                await asyncio.sleep(0.3)
             if await click_finish_button(page, index, age_sel):
                 await asyncio.sleep(3)
                 continue  # 进入下一轮看是否还有后续引导页
