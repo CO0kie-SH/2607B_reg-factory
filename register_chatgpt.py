@@ -12,6 +12,7 @@ ChatGPT (OpenAI) 自动注册
 
 import argparse
 import asyncio
+import functools
 import random
 import string
 import sys
@@ -625,16 +626,19 @@ async def register_one(index, total, p):
         if await code_input.count() > 0 or "verify" in page.url.lower() or "check" in (await page.locator("body").inner_text()).lower():
             code_sel = 'input[inputmode="numeric"], input[name="code"], input[autocomplete="one-time-code"], input[type="text"]'
 
-            async def _fetch_email_code():
+            async def _fetch_email_code(received_after=None):
                 """取一次码：先 Graph token，失败再浏览器登录 Outlook 取信。
                 取码窗口**跨 resend 复用**：已登录就只刷新收件箱轮询(skip_login)，不关窗不重登。
                 窗口统一在 Step 4 结束后的兜底处一次性 teardown。
                 有可用 Graph token(has_token)时**只走 Graph API、不开浏览器**：API 取码已直连可靠，
-                浏览器兜底只是去查同一个收件箱、纯浪费；取不到码该靠上层 resend 重发，而非开窗口。"""
+                浏览器兜底只是去查同一个收件箱、纯浪费；取不到码该靠上层 resend 重发，而非开窗口。
+                received_after: resend 后传重发时刻，只收该时刻后到的邮件(旧码已被 OpenAI 作废)。"""
                 nonlocal mail_bb, mail_pid, mail_page, mail_logged_in
                 c = await asyncio.get_event_loop().run_in_executor(
-                    None, get_code_by_token, email, refresh_token, client_id or None,
-                    OAI_SENDER, OAI_SUBJECT, r"\b(\d{6})\b", 40, 5
+                    None, functools.partial(
+                        get_code_by_token, email, refresh_token, client_id or None,
+                        OAI_SENDER, OAI_SUBJECT, r"\b(\d{6})\b", 40, 5,
+                        received_after=received_after)
                 )
                 if c or has_token:
                     return c  # 有 token：拿到就返回；没拿到也直接回(交给上层 resend)，不开浏览器
@@ -707,6 +711,7 @@ async def register_one(index, total, p):
                     print(f"  [4] 回退重发异常: {str(e)[:80]}")
 
             code = None
+            resend_at = None  # 最近一次 resend 时刻；传给取码只收此后到的新码(旧码 resend 后失效)
             for code_try in range(3):
                 # 主页已关就别再空转：resend/_renavigate 都要在活页上操作，死页只会再耗 2×150s。
                 try:
@@ -721,8 +726,9 @@ async def register_one(index, total, p):
                     print(f"  [4] 收不到码，重试 {code_try}/2：先点 Resend，没有则回退重输邮箱...")
                     if not await _click_resend_code(page):
                         await _renavigate_resend()
+                    resend_at = time.time()  # 重发后只认此刻之后的新码
                     await asyncio.sleep(2)
-                code = await _fetch_email_code()
+                code = await _fetch_email_code(received_after=resend_at)
                 if code:
                     break
 

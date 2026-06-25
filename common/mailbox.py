@@ -119,12 +119,27 @@ def get_code_by_token(
     code_regex=r"\b(\d{6})\b",
     max_wait=120,
     poll=5,
+    received_after=None,
 ):
     """轮询 inbox+junk，匹配发件人/主题后用正则提取验证码。返回 code 字符串或 None。
-    sender_contains / subject_contains 任一命中即视为目标邮件（宽松匹配，二者满足其一）。"""
+    sender_contains / subject_contains 任一命中即视为目标邮件（宽松匹配，二者满足其一）。
+    received_after: epoch 秒；只接收**该时刻之后**到达的邮件。resend 后传"重发时刻"，避免取到
+      已被 OpenAI 作废的旧码(resend 会令旧码失效、收件箱里却还躺着→取旧码必报"不正确")。"""
     token = _get_access_token(refresh_token, client_id)
     if not token:
         return None
+
+    def _too_old(m):
+        if not received_after:
+            return False
+        rv = m.get("received") or ""
+        try:
+            # Graph receivedDateTime 形如 2026-06-25T12:34:56Z
+            from datetime import datetime, timezone
+            ts = datetime.strptime(rv.replace("Z", "+0000"), "%Y-%m-%dT%H:%M:%S%z").timestamp()
+            return ts < received_after - 5  # 留 5s 容差(时钟/秒级精度)
+        except Exception:
+            return False  # 解析不了不丢弃，宁可放过
 
     pat = re.compile(code_regex)
     start = time.time()
@@ -137,6 +152,8 @@ def get_code_by_token(
                 hit_subject = any(s.lower() in subj for s in subject_contains) if subject_contains else False
                 if not (hit_sender or hit_subject):
                     continue
+                if _too_old(m):
+                    continue  # resend 前的旧码，已作废，跳过
                 # 优先在主题里找验证码（很多服务把 code 放主题），再到正文
                 for text in (m["subject"] or "", m["body"] or ""):
                     mm = pat.search(text)
