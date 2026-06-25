@@ -23,35 +23,27 @@ import requests
 DEFAULT_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
 GRAPH_FOLDERS = ["inbox", "junkemail"]
 
+# Microsoft 端点(login.microsoftonline.com / graph.microsoft.com)不像 ChatGPT 受地域封锁，
+# 不需要走代理；而 Clash 出口节点对 MS 的 TLS 握手常 SSLEOFError(冷连接闪断)。故取码/换 token
+# 一律【直连】(显式禁用代理 + trust_env=False，绕开 HTTP(S)_PROXY 环境变量)，浏览器仍走代理。
+# 实测：直连打 MS 端点干净(HTTP 400 即可达)，经代理则首发 SSLEOFError。
+_MS_NO_PROXY = {"http": None, "https": None}
 
-def _switch_clash_node():
-    """切 Clash GLOBAL 到另一个随机具体节点，规避当前出口对 login.microsoftonline.com
-    的 TLS 抖动(SSLEOFError)。成功返回新节点名，失败/不可用返回 None。"""
-    try:
-        from common import proxy_switch as ps
-        import random
-        cur = ps.current_node()
-        cands = [n for n in ps.concrete_nodes() if n != cur]
-        if not cands:
-            return None
-        pick = random.choice(cands)
-        ps.set_node(pick)
-        time.sleep(3)
-        print(f"  [mail] 切节点 {cur} -> {pick} 重试 token")
-        return pick
-    except Exception as e:
-        print(f"  [mail] 切节点失败(忽略): {str(e)[:60]}")
-        return None
+
+def _ms_session():
+    s = requests.Session()
+    s.trust_env = False  # 忽略 HTTP_PROXY/HTTPS_PROXY 等环境变量，强制直连
+    s.proxies = _MS_NO_PROXY
+    return s
 
 
 def _get_access_token(refresh_token, client_id=DEFAULT_CLIENT_ID, scope="https://graph.microsoft.com/Mail.Read"):
-    # login.microsoftonline.com 经代理偶发 TLS 抖动(SSLEOFError)/连接重置，单发就失败会让
-    # 有 token 的号白白退回浏览器取码。重试 4 次：前两次短退避(多为瞬时抖动)，后两次先切
-    # Clash 节点再试(换出口绕开坏节点)。业务错误(非 200 JSON)不算抖动，直接返回不重试。
+    # 直连打 token 端点(绕代理)；直连仍偶发瞬时抖动，轻量重试 3 次兜底。业务错误(非200)不重试。
+    sess = _ms_session()
     last_err = None
-    for attempt in range(4):
+    for attempt in range(3):
         try:
-            resp = requests.post(
+            resp = sess.post(
                 "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
                 data={
                     "client_id": client_id or DEFAULT_CLIENT_ID,
@@ -63,19 +55,17 @@ def _get_access_token(refresh_token, client_id=DEFAULT_CLIENT_ID, scope="https:/
             )
             if resp.status_code != 200:
                 print(f"  [mail] token refresh failed: {resp.status_code} {resp.text[:120]}")
-                return None  # 业务错误(invalid_grant/scope 等)，重试无意义
+                return None
             return resp.json().get("access_token")
         except (requests.ConnectionError, requests.Timeout) as e:
             last_err = e
-            print(f"  [mail] token 连接抖动({attempt+1}/4): {str(e)[:80]}")
-            if attempt >= 2:
-                _switch_clash_node()  # 后两次先换节点再试
-            elif attempt < 3:
-                time.sleep(2 * (attempt + 1))
+            if attempt < 2:
+                time.sleep(1.5)
+                continue
         except Exception as e:
             print(f"  [mail] token error: {e}")
             return None
-    print(f"  [mail] token 重试用尽(4 次): {str(last_err)[:80] if last_err else ''}")
+    print(f"  [mail] token 直连重试用尽(3 次): {str(last_err)[:80] if last_err else ''}")
     return None
 
 
@@ -87,12 +77,12 @@ def fetch_messages(access_token, folder, top=10):
         f"?$top={top}&$orderby=receivedDateTime desc"
         f"&$select=subject,from,body,bodyPreview,receivedDateTime"
     )
-    # 经代理首个 TLS 握手常 SSLEOFError、重试即通(实测 try1 失败 try2 即 200)。原来一抖就 return []
-    # 让整个 40s 轮询窗口每次都冷连接首发失败、白白超时回退浏览器。这里对连接类错误快速重试 3 次。
+    # 直连打 graph(绕代理)；直连仍偶发瞬时抖动，连接类错误快速重试 3 次。
+    sess = _ms_session()
     r = None
     for attempt in range(3):
         try:
-            r = requests.get(url, headers=headers, timeout=15)
+            r = sess.get(url, headers=headers, timeout=15)
             break
         except (requests.ConnectionError, requests.Timeout) as e:
             if attempt < 2:
