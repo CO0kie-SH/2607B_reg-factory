@@ -128,3 +128,163 @@ email----password----refresh_token----client_id
 6. 最后再更新 WebUI schema 和根 README。
 
 当前阶段的原则是：能独立验证的先独立验证，主流程不急着重构。
+
+## 7. 2026-07-09 更新记录
+
+今天继续围绕 Outlook / Microsoft Graph 做了第二阶段拆分。
+
+### 7.1 目录边界调整
+
+确认职责边界：
+
+```text
+graph_refresh_token/  只负责获取和保存 RT
+outlook/              负责读取 Outlook 邮箱、导出文件夹、标题和 AT 元信息
+```
+
+因此读邮箱逻辑放在：
+
+```text
+outlook/mailbox_graph.py
+```
+
+而不是 `graph_refresh_token/`。
+
+### 7.2 Outlook 邮箱元信息读取
+
+新增 `outlook/mailbox_graph.py`，通过 Microsoft Graph API 读取邮箱元信息。
+
+输入：
+
+```text
+graph_refresh_token/out/<email>.txt
+```
+
+格式：
+
+```text
+email----password----client_id----refresh_token
+```
+
+输出：
+
+```text
+outlook/db/<email>.csv
+outlook/out/<email>+<folder>.csv
+```
+
+`db/<email>.csv` 保存邮箱文件夹列表。
+
+`out/<email>+<folder>.csv` 保存邮件标题和元信息，包括：
+
+```text
+subject
+from
+sender
+received_datetime
+sent_datetime
+is_read
+has_attachments
+importance
+internet_message_id
+conversation_id
+web_link
+categories
+```
+
+当前明确不请求正文相关字段：
+
+```text
+body
+bodyPreview
+uniqueBody
+attachments/contentBytes
+$value
+```
+
+### 7.3 AT 持久化
+
+新增命令：
+
+```powershell
+graph_refresh_token\.venv\Scripts\python.exe outlook\mailbox_graph.py --export-at
+```
+
+输出：
+
+```text
+outlook/db/at.csv
+```
+
+用途：
+
+1. 用 RT 刷新当前 Graph access token。
+2. 保存 token endpoint 返回的有效期字段。
+3. 尝试解析 access token 是否为 JWT。
+
+实际观察到个人 Outlook / Hotmail 场景下，Graph `access_token` 可能是 opaque token，不一定是 `header.payload.signature` JWT。因此 `at.csv` 里增加了：
+
+```text
+is_jwt
+jwt_part_count
+jwt_parse_status
+expires_in
+response_expires_at_utc
+```
+
+如果 `is_jwt=false`，则以 token endpoint 返回的 `expires_in` / `response_expires_at_utc` 为有效期依据。
+
+### 7.4 Graph API 与 IMAP 的取舍
+
+确认当前读取邮件不是 IMAP / POP3 / SMTP，而是 Microsoft Graph REST API：
+
+```text
+POST /consumers/oauth2/v2.0/token
+GET  /me/mailFolders
+GET  /me/mailFolders/{folder_id}/messages
+```
+
+对本项目来说，Graph 比 IMAP 更适合 Outlook：
+
+1. 能用 RT/AT 自动续期。
+2. 返回 JSON，结构稳定。
+3. 可以用 `$select` 精确限制字段。
+4. 更适合批量脚本化和验证码场景。
+
+### 7.5 后续实时读取方案
+
+记录了两种类似 IMAP `IDLE` 的后续方案：
+
+1. Graph Change Notifications / Webhook。
+2. Graph Delta Query。
+
+当前建议先做 Delta Query，因为它适合本地脚本，不需要公网 HTTPS webhook。
+
+未来状态文件可设计为：
+
+```text
+outlook/db/delta_state.csv
+```
+
+字段：
+
+```text
+email,folder_id,folder_name,delta_link,last_sync_at
+```
+
+建议未来 CLI：
+
+```powershell
+graph_refresh_token\.venv\Scripts\python.exe outlook\mailbox_graph.py --watch-delta --folder "收件箱" --folder "垃圾邮件" --interval 3
+```
+
+### 7.6 运行时文件约定
+
+新增：
+
+```text
+outlook/db/.gitignore
+outlook/out/.gitignore
+```
+
+这些目录会产生账号、AT、文件夹和邮件标题数据，不进入 Git。

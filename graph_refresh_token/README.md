@@ -12,7 +12,7 @@ graph_refresh_token/
   .env.example         # 模板
   requirements.txt     # 子项目最小依赖
   oauth_graph.py       # 独立授权码流程实现
-  out/                 # 运行后生成，Git 忽略
+  out/                 # RT 文件输出，Git 忽略
 ```
 
 推荐先创建子项目自己的虚拟环境，再安装依赖：
@@ -98,6 +98,8 @@ Microsoft requires adding security proof for this account (proofs/Add fShowSkip=
 ```
 
 说明这个账号被 Microsoft 强制要求添加备用邮箱或手机号安全信息。该页面没有跳过入口，仅靠 Outlook 邮箱账号和密码不能完成 OAuth 授权，也就不能拿到 Graph refresh token。处理方式是在浏览器里登录该 Outlook 账号，按提示手动添加备用邮箱或手机号并完成安全校验，然后回到本工具重新运行。
+
+拿到 RT 后，如果要读取邮箱文件夹或邮件标题元信息，使用 `outlook/mailbox_graph.py`。本目录只负责获取和保存 RT。
 
 ## 1. 这个流程解决什么问题
 
