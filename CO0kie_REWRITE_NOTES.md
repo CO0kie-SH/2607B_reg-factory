@@ -1,5 +1,7 @@
 # CO0kie 项目改写说明
 
+当前版本：`26.7.9A`
+
 本文档是本 fork 的改写记录和后续重构入口。原项目说明仍以 `README.md` 为准；更完整的结构分析见 `PROJECT_OVERVIEW.md`、`outlook/ANALYSIS.md` 和 `graph_refresh_token/README.md`。
 
 ## 1. 当前改写目标
@@ -130,6 +132,8 @@ email----password----refresh_token----client_id
 当前阶段的原则是：能独立验证的先独立验证，主流程不急着重构。
 
 ## 7. 2026-07-09 更新记录
+
+版本号：`26.7.9A`
 
 今天继续围绕 Outlook / Microsoft Graph 做了第二阶段拆分。
 
@@ -288,3 +292,31 @@ outlook/out/.gitignore
 ```
 
 这些目录会产生账号、AT、文件夹和邮件标题数据，不进入 Git。
+
+### 7.7 RT 提取失败重试
+
+`graph_refresh_token/oauth_graph.py` 增加默认重试规则：
+
+```text
+首次失败 -> 等待 1 秒 -> 自动重试 1 次
+```
+
+默认最多运行 2 次：
+
+```powershell
+graph_refresh_token\.venv\Scripts\python.exe graph_refresh_token\oauth_graph.py
+```
+
+可关闭重试：
+
+```powershell
+graph_refresh_token\.venv\Scripts\python.exe graph_refresh_token\oauth_graph.py --retries 0
+```
+
+可调整重试次数和间隔：
+
+```powershell
+graph_refresh_token\.venv\Scripts\python.exe graph_refresh_token\oauth_graph.py --retries 3 --retry-delay 2
+```
+
+这个优化主要用于处理 Microsoft 登录页、代理、TLS 或临时中间页导致的偶发失败。

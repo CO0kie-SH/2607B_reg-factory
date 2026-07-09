@@ -1,5 +1,7 @@
 # Graph refresh token 提取流程
 
+子项目版本：`26.7.9A`
+
 本文档专门说明项目中 Outlook / Microsoft Graph refresh token 的提取流程。本目录现在包含一个独立子项目实现：`oauth_graph.py`。它不会修改根目录现有流程，默认从本目录 `.env` 读取单个 Outlook 账号密码，并把结果写到本目录 `out/`。
 
 ## 0. 子项目本地运行
@@ -88,8 +90,16 @@ py -3 graph_refresh_token/oauth_graph.py --print-token
 | `--password <password>` | 临时覆盖 `.env` 中的密码；不推荐，因为命令历史会留下密码。 |
 | `--out-dir <path>` | 临时指定输出目录；默认 `graph_refresh_token/out`。 |
 | `--no-proxy` | 忽略当前 shell 的 `HTTP_PROXY` / `HTTPS_PROXY`。 |
+| `--retries <n>` | 首次失败后的重试次数；默认 `1`，即最多跑 2 次。 |
+| `--retry-delay <seconds>` | 每次重试前等待秒数；默认 `1`。 |
 | `GRAPH_OUTPUT_DIR=out` | 通过环境变量或 `.env` 指定输出目录。 |
 | `SAVE_DEBUG_HTML=1` | 失败时保存最后一个未知页面，便于分析 Microsoft 中间页变化。 |
+
+默认失败会等待 1 秒后重试 1 次。完全关闭重试：
+
+```powershell
+graph_refresh_token/.venv/Scripts/python.exe graph_refresh_token/oauth_graph.py --retries 0
+```
 
 如果失败信息是：
 

@@ -395,6 +395,26 @@ def save_result(result: dict[str, Any], password: str, out_dir: Path) -> Path:
     return txt_path
 
 
+def run_once(cfg: GraphOAuthConfig, print_token: bool = False) -> Path:
+    print(f"Graph OAuth refresh_token extraction for {cfg.email}")
+    print(f"  client_id={cfg.client_id}")
+    print(f"  scope={cfg.scope}")
+    print(f"  out_dir={cfg.out_dir}")
+    print(f"  proxy={'system env' if cfg.use_system_proxy else 'disabled'}")
+
+    result = extract_refresh_token(cfg)
+    txt_path = save_result(result, cfg.password, cfg.out_dir)
+
+    print("  [OK] refresh_token extracted")
+    print(f"  saved: {txt_path}")
+    if print_token:
+        print(result["refresh_token"])
+    else:
+        rt = result["refresh_token"]
+        print(f"  refresh_token: {rt[:24]}...{rt[-12:]}")
+    return txt_path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Extract Microsoft Graph refresh_token from one Outlook account.")
     parser.add_argument("--env", default=str(ENV_PATH), help="Path to .env file.")
@@ -402,6 +422,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--password", default="", help="Override OUTLOOK_PASSWORD. Prefer .env instead of CLI.")
     parser.add_argument("--out-dir", default="", help="Output directory. Defaults to graph_refresh_token/out.")
     parser.add_argument("--no-proxy", action="store_true", help="Ignore HTTP_PROXY/HTTPS_PROXY for the OAuth flow.")
+    parser.add_argument("--retries", type=int, default=1, help="Retry count after the first failed attempt. Default: 1.")
+    parser.add_argument("--retry-delay", type=float, default=1.0, help="Seconds to wait before retry. Default: 1.")
     parser.add_argument("--print-token", action="store_true", help="Print refresh_token to console. Off by default.")
     args = parser.parse_args(argv)
 
@@ -421,23 +443,24 @@ def main(argv: list[str] | None = None) -> int:
                 "or pass --email and --password."
             )
 
-        print(f"Graph OAuth refresh_token extraction for {cfg.email}")
-        print(f"  client_id={cfg.client_id}")
-        print(f"  scope={cfg.scope}")
-        print(f"  out_dir={cfg.out_dir}")
-        print(f"  proxy={'system env' if cfg.use_system_proxy else 'disabled'}")
-
-        result = extract_refresh_token(cfg)
-        txt_path = save_result(result, cfg.password, cfg.out_dir)
-
-        print("  [OK] refresh_token extracted")
-        print(f"  saved: {txt_path}")
-        if args.print_token:
-            print(result["refresh_token"])
-        else:
-            rt = result["refresh_token"]
-            print(f"  refresh_token: {rt[:24]}...{rt[-12:]}")
-        return 0
+        attempts = max(1, int(args.retries) + 1)
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            if attempts > 1:
+                print(f"Attempt {attempt}/{attempts}")
+            try:
+                run_once(cfg, print_token=args.print_token)
+                return 0
+            except Exception as exc:
+                last_exc = exc
+                print(f"  [FAIL] {exc}", file=sys.stderr)
+                if attempt < attempts:
+                    delay = max(0.0, float(args.retry_delay))
+                    print(f"  retrying in {delay:g}s...")
+                    time.sleep(delay)
+        if last_exc:
+            raise last_exc
+        return 1
     except Exception as exc:
         print(f"  [FAIL] {exc}", file=sys.stderr)
         return 1
