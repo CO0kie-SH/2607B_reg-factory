@@ -58,6 +58,29 @@ def log(msg, level="INFO"):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] [{level}] {msg}", flush=True)
 
 
+def ensure_clash_proxy_env():
+    """Use .env CLASH_PROXY for direct loop runs, while keeping local APIs direct."""
+    existing = (
+        os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+        or ""
+    ).strip()
+    proxy = existing or os.environ.get("CLASH_PROXY", "").strip()
+    if not proxy:
+        return ""
+    if not existing:
+        os.environ["HTTP_PROXY"] = os.environ["HTTPS_PROXY"] = proxy
+        os.environ["http_proxy"] = os.environ["https_proxy"] = proxy
+    no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    required = ["127.0.0.1", "localhost", "::1"]
+    parts = [p.strip() for p in no_proxy.split(",") if p.strip()]
+    for item in required:
+        if item not in parts:
+            parts.append(item)
+    os.environ["NO_PROXY"] = os.environ["no_proxy"] = ",".join(parts)
+    return proxy
+
+
 def load_standalone():
     if not os.path.isfile(STANDALONE_PATH):
         log(f"standalone not found at {STANDALONE_PATH}", "ERR")
@@ -254,12 +277,72 @@ def count_pool():
         return 0
 
 
+def extract_graph_for_account(email, password, attempts=3):
+    """Return Graph token data for a freshly registered Outlook account."""
+    try:
+        from extract_graph_tokens import get_graph_token
+        for attempt in range(attempts):
+            res = get_graph_token(email, password)
+            if res and res.get("refresh_token"):
+                graph = {
+                    "refresh_token": res["refresh_token"],
+                    "client_id": res.get("client_id") or "",
+                }
+                log(f"graph token extracted for {email}", "OK")
+                return graph
+            if attempt < attempts - 1:
+                log(f"graph token attempt {attempt + 1}/{attempts} failed, rotate and retry: {email}", "WARN")
+                try:
+                    from common import proxy_switch as _ps
+                    import random as _rnd
+                    cur = _ps.current_node()
+                    candidates = [n for n in _ps.concrete_nodes() if n != cur]
+                    if candidates:
+                        _ps.set_node(_rnd.choice(candidates))
+                except Exception as exc:
+                    log(f"graph retry node switch failed: {str(exc)[:50]}", "WARN")
+                time.sleep(3 * (attempt + 1))
+        log(f"graph token missing after {attempts} attempts: {email}", "WARN")
+    except Exception as exc:
+        log(f"graph token extraction error: {type(exc).__name__}: {exc}", "WARN")
+    return None
+
+
+def append_graph_account_to_emails_pool(email, password, graph):
+    """Append only Graph-ready accounts to emails.txt."""
+    token = (graph or {}).get("refresh_token") or ""
+    client_id = (graph or {}).get("client_id") or ""
+    if not token:
+        log(f"emails.txt skip {email}: no graph refresh_token", "WARN")
+        return False
+    try:
+        existing = set()
+        if os.path.isfile(EMAILS_POOL):
+            with open(EMAILS_POOL, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        existing.add(line.split("----")[0].strip().lower())
+        if email.lower() in existing:
+            return True
+        with open(EMAILS_POOL, "a", encoding="utf-8") as f:
+            f.write(f"{email}----{password}----{token}----{client_id}\n")
+        log(f"emails.txt += {email} (token=yes)", "OK")
+        return True
+    except Exception as exc:
+        log(f"append_to_emails_pool failed: {type(exc).__name__}: {exc}", "WARN")
+        return False
+
+
 def append_to_emails_pool(email, password):
     """把成功号桥接进 emails.txt 池，供账号注册侧 common/emails.next_email 消费。
     注册成功后立即用纯 HTTP OAuth 抽 Graph refresh_token（extract_graph_tokens.get_graph_token），
     写真 token/client_id —— 之后 ChatGPT 取码全走 Graph API，免浏览器登录/取码。
     抽取失败（偶发风控/网络）才回退占位符 fresh，消费侧届时退化到浏览器取码。"""
     token = client_id = "fresh"
+    graph = globals().pop("_CURRENT_GRAPH_ACCOUNT", None)
+    if graph is not None:
+        return append_graph_account_to_emails_pool(email, password, graph)
     try:
         from extract_graph_tokens import get_graph_token
         # 抽取经代理偶发 TLS 抖动(SSLEOFError)，单试一次一抖就回退 fresh、白丢 token 快路；
@@ -430,6 +513,8 @@ def main():
                          "(0 = no cap; producer always runs)")
     ap.add_argument("--max-press", default="3",
                     help="OUTLOOK_REG_MAX_PRESS — captcha press-and-hold cap")
+    ap.add_argument("--confirm-before-register", action="store_true",
+                    help="auto-click confirmation on the signup page before filling")
     ap.add_argument("--timeout", type=int, default=180,
                     help="hard cap per attempt (seconds)")
     ap.add_argument("--sleep", type=int, default=5,
@@ -439,6 +524,8 @@ def main():
     args = ap.parse_args()
 
     os.environ.setdefault("OUTLOOK_REG_MAX_PRESS", args.max_press)
+    if args.confirm_before_register:
+        os.environ["OUTLOOK_CONFIRM_BEFORE_REGISTER"] = "1"
     if sys.platform == "win32":
         try:
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -446,6 +533,9 @@ def main():
             pass
 
     mod = load_standalone()
+    injected_proxy = ensure_clash_proxy_env()
+    if injected_proxy:
+        log(f"proxy env ready: {injected_proxy}")
     proxy = clash_proxy_from_env()
     if not proxy:
         log("HTTP_PROXY not set — running without proxy (signup will likely fail)", "WARN")
@@ -488,13 +578,23 @@ def main():
             log(f"attempt raised {type(e).__name__}: {str(e)[:200]}", "WARN")
         elapsed = time.time() - t0
         if email and password:
+            graph = extract_graph_for_account(email, password)
+            if not graph or not graph.get("refresh_token"):
+                failed += 1
+                log(f"registered but graph RT missing; not saved: {email}", "WARN")
+                time.sleep(args.sleep)
+                continue
             fname = write_record({
                 "email": email,
                 "password": password,
+                "refresh_token": graph["refresh_token"],
+                "client_id": graph.get("client_id") or "",
+                "graph": graph,
                 "outlook_cookies": cookies,
                 "source": "self-loop",
                 "ts": datetime.now().isoformat(),
             })
+            globals()["_CURRENT_GRAPH_ACCOUNT"] = graph
             append_to_emails_pool(email, password)   # 桥接进账号注册池
             succ += 1
             log(f"OK in {elapsed:.1f}s: {email} -> {fname} (pool now {count_pool()})", "OK")

@@ -180,11 +180,13 @@ cp .env.example .env
 python run_full_flow.py                       # 注册 1 个 outlook 号后在 claude 上注册
 python run_full_flow.py --platforms claude chatgpt grok
 python run_full_flow.py --platforms chatgpt --import-c2a   # chatgpt 注册成功后即时导入 chatgpt2api
+python run_full_flow.py --platforms chatgpt --email-confirm-before-register  # Outlook 注册页自动点确认后再填写
 python run_full_flow.py --skip-email --email a@outlook.com --password xxx
 python run_full_flow.py --dry-run             # 只打印将执行的命令
 ```
 > 自动注入 `HTTP(S)_PROXY` 与 `CLASH_API/SECRET/GROUP` 给子进程。
 > `--import-c2a` 逐层透传到 `register_chatgpt.py`，只对 chatgpt 平台生效，需先配 `CHATGPT2API_URL/KEY`。
+> `--email-confirm-before-register` 会在 Outlook 注册页打开后自动点击确认/同意类按钮，再开始填写。
 
 ### 仅三平台注册（已有邮箱池 emails.txt）
 ```bash
@@ -201,7 +203,11 @@ python mailbox_broker.py --port 8765
 ```bash
 python outlook_reg_loop.py                     # 循环
 python outlook_reg_loop.py --count 20          # 注册 20 个后退出
+python outlook_reg_loop.py --confirm-before-register --max-press 10 --timeout 300
+python register_outlook_standalone.py --count 5 --mode browser --confirm-before-register
 ```
+> Outlook 自注册成功后会立即提取 Microsoft Graph `refresh_token`；只有拿到 RT 的账号才写入 `_outlook_pool/` 与 `emails.txt`。
+> `emails.txt` / `outlook_accounts/accounts_*.txt` 格式为 `email----password----refresh_token----client_id`。
 
 ### GitHub 注册（含 Arkose 验证视觉求解）
 ```bash
@@ -550,9 +556,9 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 
 | 路径 | 内容 |
 |---|---|
-| `emails.txt` | 邮箱池（`email----password----token----clientid`），运行时生成 |
+| `emails.txt` | 邮箱池（`email----password----refresh_token----client_id`），运行时生成 |
 | `cookies/` | 注册成功导出的 cookie（`full_*.json` / `sk_*.txt`） |
-| `_outlook_pool/` | outlook_reg_loop 产出的待用号 |
+| `_outlook_pool/` | outlook_reg_loop 产出的待用号（JSON 内含 `refresh_token` / `client_id`） |
 | `tri_register_logs/` | 三平台注册日志 |
 | `screenshots*/` | 调试截图 |
 
