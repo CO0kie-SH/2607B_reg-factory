@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Outlook 邮箱</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/style.css?v=260712-recipient-column" />
+</head>
+<body>
+  <main class="page mailbox-page">
+    <header class="topbar mailbox-topbar">
+      <div>
+        <h1>Outlook 邮箱</h1>
+        <p id="mailbox-account">正在读取会话</p>
+      </div>
+      <div class="topbar-actions">
+        <div id="mailbox-status" class="status connected" aria-live="polite">已登录</div>
+        <button id="refresh-btn" class="secondary-btn" type="button">刷新</button>
+        <button id="mailbox-logout-btn" class="danger-btn" type="button">退出</button>
+      </div>
+    </header>
+
+    <div id="mailbox-result" class="result-line" aria-live="polite">正在加载文件夹</div>
+
+    <section class="mail-layout">
+      <aside class="folder-pane" aria-labelledby="folder-heading">
+        <div class="pane-heading">
+          <h2>邮箱列表</h2>
+          <span id="account-count" class="count-label">0</span>
+        </div>
+        <nav id="account-list" class="account-list" aria-label="邮箱账号"></nav>
+
+        <div class="sidebar-divider"></div>
+
+        <div class="pane-heading">
+          <h2 id="recipient-heading">收件地址</h2>
+          <span id="recipient-count" class="count-label">0</span>
+        </div>
+        <div id="recipient-list" class="recipient-list" aria-labelledby="recipient-heading"></div>
+
+        <div class="sidebar-divider"></div>
+
+        <div class="pane-heading">
+          <h2 id="folder-heading">文件夹</h2>
+          <span id="folder-count" class="count-label">0</span>
+        </div>
+        <nav id="folder-list" class="folder-list" aria-label="邮箱文件夹"></nav>
+      </aside>
+
+      <section class="message-pane" aria-labelledby="message-heading">
+        <div class="pane-heading message-heading-row">
+          <div>
+            <h2 id="message-heading">邮件</h2>
+            <span id="selected-folder" class="muted-label">未选择文件夹</span>
+          </div>
+          <label class="limit-control">
+            <span>数量</span>
+            <select id="message-limit">
+              <option value="20">20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="message-table-wrap">
+          <table class="message-table">
+            <thead>
+              <tr>
+                <th>主题</th>
+                <th>发件人</th>
+                <th>收件人</th>
+                <th>接收时间</th>
+              </tr>
+            </thead>
+            <tbody id="message-list">
+              <tr class="empty-row"><td colspan="4">暂无数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script src="/static/mailbox.js?v=260712-recipient-column"></script>
+</body>
+</html>

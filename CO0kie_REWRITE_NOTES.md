@@ -1,6 +1,6 @@
 # CO0kie 项目改写说明
 
-当前版本：`26.7.9A`
+当前版本：`26.7.12A`
 
 本文档是本 fork 的改写记录和后续重构入口。原项目说明仍以 `README.md` 为准；更完整的结构分析见 `PROJECT_OVERVIEW.md`、`outlook/ANALYSIS.md` 和 `graph_refresh_token/README.md`。
 
@@ -320,3 +320,82 @@ graph_refresh_token\.venv\Scripts\python.exe graph_refresh_token\oauth_graph.py 
 ```
 
 这个优化主要用于处理 Microsoft 登录页、代理、TLS 或临时中间页导致的偶发失败。
+
+## 8. 2026-07-12 更新记录
+
+版本号：`26.7.12A`
+
+本次完成 Outlook 子项目第三阶段：在 `outlook/` 内形成可独立运行的本地邮箱服务，并把 Graph 元数据能力从离线 CSV 导出扩展到页面和 JSON API。
+
+### 8.1 aiohttp 邮箱服务
+
+新增目录：
+
+```text
+outlook/server/
+  main.py
+  auth_service.py
+  static/
+  tests/
+  log/.gitignore
+```
+
+启动命令：
+
+```powershell
+D:\0Code2\py312\python.exe outlook/server/main.py --host 127.0.0.1 --port 8780
+```
+
+服务读取 `graph_refresh_token/out/*.txt`，复用 `outlook/mailbox_graph.py` 刷新 Graph access token 和读取文件夹/邮件标题。
+
+### 8.2 登录与权限模型
+
+普通登录使用账号文件里的邮箱和密码，只允许访问当前邮箱。
+
+本机免密白名单使用严格 AND 条件：
+
+```text
+Host 主机部分 == 127.0.0.1
+AND
+request.remote == 127.0.0.1
+```
+
+`localhost`、`X-Forwarded-For`、`X-Real-IP` 等不参与白名单判断。全邮箱会话每次请求重新检查 Host/IP，条件变化立即失效。
+
+### 8.3 收件地址与标题 API
+
+`mailbox_graph.py` 的标题字段增加 `toRecipients`，用于：
+
+1. 在页面邮件表格中展示实际收件地址。
+2. 从近期收件箱和垃圾邮件归集主邮箱与已观察别名。
+3. 按别名查找最新邮件标题。
+
+标准 URL：
+
+```text
+GET /api/mailboxes/user@outlook.com/recipients
+GET /api/mailboxes/user@outlook.com/messages/latest
+GET /api/mailboxes/user@outlook.com/messages/latest?recipient=user%2B2%40outlook.com
+```
+
+当前只返回主题，不读取 `body`、`bodyPreview`、`uniqueBody` 或附件内容。
+
+### 8.4 运行数据和验证
+
+`outlook/server/log/` 保存轮转服务日志、进程输出和本地 Playwright 截图。目录级 `.gitignore` 使用：
+
+```gitignore
+*
+!.gitignore
+```
+
+因此提交只保留空目录规则，不包含邮箱地址、日志、截图或其他运行产物。
+
+验证覆盖：
+
+- 本机白名单和 `localhost` 差分。
+- 普通用户自身访问与跨邮箱 `403`。
+- 主邮箱和多个别名的收件地址归集。
+- 每个收件地址的最新主题 API。
+- 5 项单元测试、Python/JavaScript 语法检查。
+- Edge/Playwright 桌面与移动端布局、控制台错误和横向溢出检查。

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Outlook 邮箱工作台</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/style.css?v=260712-auth" />
+</head>
+<body>
+  <main class="page login-page">
+    <header class="topbar">
+      <div>
+        <h1>Outlook 邮箱工作台</h1>
+        <p>Microsoft Graph</p>
+      </div>
+      <div id="auth-status" class="status disconnected" aria-live="polite">未登录</div>
+    </header>
+
+    <section class="login-panel" aria-labelledby="login-title">
+      <div class="panel-heading">
+        <h2 id="login-title">邮箱登录</h2>
+        <span id="service-state" class="service-state">正在连接服务</span>
+      </div>
+
+      <form id="login-form" class="login-form">
+        <div class="login-fields">
+          <label>
+            <span>Outlook 邮箱</span>
+            <input
+              id="login-email"
+              class="text-input"
+              type="email"
+              autocomplete="username"
+              placeholder="name@outlook.com"
+            />
+          </label>
+          <label>
+            <span>邮箱密码</span>
+            <input
+              id="login-password"
+              class="text-input"
+              type="password"
+              autocomplete="current-password"
+              placeholder="请输入密码"
+            />
+          </label>
+        </div>
+
+        <div class="login-buttons">
+          <button id="query-account-btn" class="secondary-btn" type="button">查询账号</button>
+          <button id="login-btn" type="submit">登录</button>
+          <button id="enter-mailbox-btn" class="inactive-btn" type="button" disabled>进入邮箱</button>
+          <button id="logout-btn" class="danger-btn hidden" type="button">退出</button>
+        </div>
+      </form>
+
+      <div id="auth-result" class="result-line" aria-live="polite">等待输入邮箱</div>
+
+      <dl class="account-summary" aria-label="账号状态">
+        <div>
+          <dt>邮箱</dt>
+          <dd id="summary-email">-</dd>
+        </div>
+        <div>
+          <dt>凭据文件</dt>
+          <dd id="summary-source">-</dd>
+        </div>
+        <div>
+          <dt>登录会话</dt>
+          <dd id="summary-sessions">-</dd>
+        </div>
+      </dl>
+    </section>
+  </main>
+  <script src="/static/index.js?v=260712-auth"></script>
+</body>
+</html>

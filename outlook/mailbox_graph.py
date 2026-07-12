@@ -130,6 +130,26 @@ def parse_account_file(path: Path) -> GraphAccount:
     )
 
 
+def message_recipient_addresses(message: dict[str, Any]) -> list[dict[str, str]]:
+    """Return normalized To-recipient names and addresses from Graph metadata."""
+    recipients: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in message.get("toRecipients") or []:
+        email_address = item.get("emailAddress") or {}
+        address = str(email_address.get("address") or "").strip()
+        normalized = address.lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        recipients.append(
+            {
+                "name": str(email_address.get("name") or "").strip(),
+                "address": address,
+            }
+        )
+    return recipients
+
+
 class GraphMailboxClient:
     def __init__(
         self,
@@ -261,10 +281,104 @@ class GraphMailboxClient:
             "$orderby": "receivedDateTime desc",
             "$select": (
                 "id,subject,from,sender,receivedDateTime,sentDateTime,isRead,"
-                "hasAttachments,importance,internetMessageId,conversationId,webLink,categories"
+                "hasAttachments,importance,internetMessageId,conversationId,webLink,categories,"
+                "toRecipients"
             ),
         }
         return self._paged_values(access_token, url, params, limit=limit)
+
+    def list_recipient_addresses(
+        self,
+        access_token: str,
+        primary_email: str,
+        folder_ids: Iterable[str] = ("inbox", "junkemail"),
+        top_per_folder: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Discover mailbox aliases from recent message To-recipient metadata."""
+        normalized_primary = primary_email.strip().lower()
+        recipients: dict[str, dict[str, Any]] = {
+            normalized_primary: {
+                "name": primary_email,
+                "address": primary_email,
+                "is_primary": True,
+                "message_count": 0,
+                "last_received_at": "",
+                "folders": set(),
+            }
+        }
+
+        for folder_id in folder_ids:
+            folder = str(folder_id).strip()
+            if not folder:
+                continue
+            messages = self.list_message_titles(access_token, folder, top=top_per_folder)
+            for message in messages:
+                received_at = str(message.get("receivedDateTime") or "")
+                for recipient in message_recipient_addresses(message):
+                    normalized = recipient["address"].lower()
+                    entry = recipients.setdefault(
+                        normalized,
+                        {
+                            "name": recipient["name"] or recipient["address"],
+                            "address": recipient["address"],
+                            "is_primary": normalized == normalized_primary,
+                            "message_count": 0,
+                            "last_received_at": "",
+                            "folders": set(),
+                        },
+                    )
+                    if recipient["name"]:
+                        entry["name"] = recipient["name"]
+                    entry["message_count"] += 1
+                    entry["folders"].add(folder)
+                    if received_at > entry["last_received_at"]:
+                        entry["last_received_at"] = received_at
+
+        result: list[dict[str, Any]] = []
+        for entry in recipients.values():
+            result.append({**entry, "folders": sorted(entry["folders"])})
+        result.sort(
+            key=lambda entry: (
+                not entry["is_primary"],
+                entry["last_received_at"] == "",
+                entry["address"].lower(),
+            )
+        )
+        return result
+
+    def latest_message_title(
+        self,
+        access_token: str,
+        folder_id: str = "inbox",
+        recipient: str = "",
+        scan_limit: int = 500,
+    ) -> dict[str, Any] | None:
+        """Return the newest title metadata, optionally addressed to one alias."""
+        encoded_id = urllib.parse.quote(folder_id, safe="")
+        next_url: str | None = f"{GRAPH_BASE}/me/mailFolders/{encoded_id}/messages"
+        next_params: dict[str, str] | None = {
+            "$top": "50",
+            "$orderby": "receivedDateTime desc",
+            "$select": "id,subject,receivedDateTime,toRecipients",
+        }
+        normalized_recipient = recipient.strip().lower()
+        scanned = 0
+
+        while next_url:
+            payload = self._graph_get(access_token, next_url, next_params)
+            for message in payload.get("value", []):
+                scanned += 1
+                addresses = {
+                    item["address"].lower()
+                    for item in message_recipient_addresses(message)
+                }
+                if not normalized_recipient or normalized_recipient in addresses:
+                    return message
+                if scan_limit > 0 and scanned >= scan_limit:
+                    return None
+            next_url = payload.get("@odata.nextLink")
+            next_params = None
+        return None
 
     def write_folders_csv(self, account: GraphAccount, folders: list[MailFolder]) -> Path:
         self.db_dir.mkdir(parents=True, exist_ok=True)

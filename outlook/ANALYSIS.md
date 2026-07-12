@@ -1,12 +1,14 @@
 # Outlook 模块详细分析
 
+当前模块版本：`26.7.12A`
+
 本文档专门分析项目里的 Outlook 相关能力，包括流程、依赖工具、函数结构、运行时数据和后续拆分建议。
 
-当前状态：代码还没有真正搬进 `outlook/` 包。大部分 Outlook 逻辑仍在项目根目录脚本和 `common/` 目录中。`outlook/` 目前是后续拆分目标目录。
+当前状态：Graph 邮箱元数据读取和 aiohttp 邮箱工作台已经进入 `outlook/` 包；注册、解锁、共享 broker 和平台取码兼容层仍位于项目根目录或 `common/`，后续继续渐进迁移。
 
 ## 1. 这一块负责什么
 
-Outlook 相关代码承担四类职责：
+Outlook 相关代码承担五类职责：
 
 1. 生产 Outlook 邮箱账号。
    - 自动注册新的 Outlook 邮箱。
@@ -26,6 +28,10 @@ Outlook 相关代码承担四类职责：
    - ChatGPT：通常是 6 位数字验证码。
    - Grok：短字母数字 launch code。
    - GitHub：从 Outlook 收 GitHub launch code。
+5. 提供本地邮箱查看与元数据 API。
+   - 通过 aiohttp 提供登录页和邮箱工作台。
+   - 展示账号、收件地址、文件夹和邮件标题元数据。
+   - 提供按邮箱或别名读取最新邮件主题的本地 API。
 
 ## 2. 文件地图
 
@@ -40,6 +46,10 @@ Outlook 相关代码承担四类职责：
 | `common/emails.py` | `emails.txt` 邮箱池的读取、占用、错误标记。 | 被平台注册脚本共用。 |
 | `run_full_flow.py` | 把 Outlook 注册作为 Stage A 编排。 | 启动 `outlook_reg_loop.py`，监听 `emails.txt` 新增账号。 |
 | `register_three_platforms.py` | 把 Outlook 邮箱分发给 Claude/ChatGPT/Grok。 | 可给子进程注入 `MAILBOX_BROKER`。 |
+| `outlook/mailbox_graph.py` | Graph 账号加载、文件夹、邮件标题和收件地址元数据。 | 读取 `graph_refresh_token/out/*.txt`，被 CLI 导出器和 aiohttp 服务复用。 |
+| `outlook/server/main.py` | aiohttp 登录页、邮箱工作台和 JSON API。 | 依赖 `mailbox_graph.py` 与 `auth_service.py`。 |
+| `outlook/server/auth_service.py` | 密码校验、内存会话、入口令牌和全邮箱权限。 | 直接读取 Graph 账号文件，不持久化会话。 |
+| `outlook/server/static/` | 登录页、邮箱页、收件地址和邮件表格。 | 通过同源 API 获取数据。 |
 
 ## 3. 总体数据流
 
@@ -66,6 +76,16 @@ register_three_platforms.py --broker http://127.0.0.1:8765
   -> common.mailbox.fetch_from_broker()
   -> mailbox_broker.py /fetch
   -> 单个 Outlook 浏览器会话轮询 inbox/junk
+```
+
+如果走本地邮箱工作台：
+
+```text
+浏览器 -> outlook/server/main.py:8780
+  -> auth_service.py 校验账号或本机白名单
+  -> mailbox_graph.py 用 RT 刷新 Graph AT
+  -> Graph /me/mailFolders 与 /messages
+  -> 页面展示账号、收件地址、文件夹和标题元数据
 ```
 
 ## 4. Outlook 账号生产流程
@@ -442,6 +462,44 @@ POST <MAILBOX_BROKER>/fetch
 
 这条路径主要服务多平台注册并行场景。
 
+### 7.4 aiohttp 邮箱工作台
+
+核心文件：
+
+```text
+outlook/server/main.py
+outlook/server/auth_service.py
+outlook/server/static/
+```
+
+启动：
+
+```powershell
+D:\0Code2\py312\python.exe outlook/server/main.py --host 127.0.0.1 --port 8780
+```
+
+它和 `mailbox_broker.py` 的定位不同：broker 面向平台注册脚本分发验证码或链接；aiohttp 邮箱工作台面向人工查看和通用标题元数据 API，不读取邮件正文。
+
+主要接口：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| `GET` | `/health` | 返回服务版本、时间和账号目录状态。 |
+| `GET` | `/api/accounts` | 返回当前会话可访问的邮箱。 |
+| `GET` | `/api/folders?email=<address>` | 返回 Graph 文件夹列表。 |
+| `GET` | `/api/messages?email=<address>&folder=<id>&top=20` | 返回主题、发件人、收件人和接收时间。 |
+| `GET` | `/api/mailboxes/<address>/recipients` | 从近期 `toRecipients` 归集主地址和已观察别名。 |
+| `GET` | `/api/mailboxes/<address>/messages/latest?recipient=<alias>` | 返回该收件地址对应的最新主题。 |
+
+收件地址列表不是 Microsoft 账号配置页的权威 alias 清单。当前 Graph token 只有邮件读取权限，因此服务从收件箱和垃圾邮件的近期 `toRecipients` 元数据归集地址，并始终加入主邮箱。
+
+权限规则：
+
+- 普通账号密码会话只能访问自己的邮箱。
+- 只有原始 `Host` 和 `request.remote` 同时为 `127.0.0.1` 才能本机免密登录全部邮箱。
+- 不信任 `X-Forwarded-For`、`X-Real-IP` 等代理头。
+- 全邮箱会话每次请求都会重新校验 Host/IP，条件变化立即注销。
+
 ## 8. 共享取码服务
 
 核心文件：`mailbox_broker.py`
@@ -712,7 +770,8 @@ Outlook 使用方式：
 | Playwright | 所有浏览器自动化流程 | 驱动注册、登录、收信、解锁页面。 |
 | Clash/mihomo | `outlook_reg_loop.py` | 切换出口节点，降低同 IP 连续注册的失败率。 |
 | Microsoft signup/login | 注册、解锁、Graph 授权 | 真实 Outlook 注册和登录入口。 |
-| Microsoft Graph API | `common/mailbox.py`、`extract_graph_tokens.py` | 读取邮件和换 access token。 |
+| Microsoft Graph API | `common/mailbox.py`、`extract_graph_tokens.py`、`outlook/mailbox_graph.py` | 读取邮件和换 access token。 |
+| aiohttp | `outlook/server/main.py` | 提供本地邮箱页面、会话认证和 JSON API。 |
 | CapSolver | 注册 helper | Arkose/PX helper，不是当前主注册热路径。 |
 | EZ-Captcha | 解锁和注册 helper | unlock 中有 PX fallback。 |
 | `check_outlook_status` 可选模块 | `verify_registered_outlook()` | 注册后验证账号密码是否能登录；缺失时跳过。 |
@@ -730,6 +789,7 @@ Outlook 使用方式：
 | `screenshots_unlock/` | `unlock_outlook.py` | 调试解锁状态机。 |
 | `emails_used_<platform>.txt` | `common/emails.py` | 防止同平台重复使用邮箱。 |
 | `emails_error_<platform>.txt` | 平台脚本 | 防止重复使用该平台失败账号。 |
+| `outlook/server/log/` | aiohttp 邮箱服务和 Playwright 验证 | 本地排错；目录内除 `.gitignore` 外全部忽略。 |
 
 ## 14. 主要环境变量
 
@@ -770,7 +830,7 @@ Outlook 使用方式：
    - `screenshots_outlook`
    - `screenshots_unlock`
 6. `register_outlook_standalone.py` 内有一些历史 helper，尤其打码相关 helper，不一定仍在热路径。
-7. 还没有 package 边界。直接移动文件会破坏 import、subprocess 路径和 WebUI。
+7. 已有初步 package 边界，但只覆盖 `mailbox_graph.py` 和 `server/`。继续移动注册、解锁或 broker 时仍需保留 root/common 兼容入口，避免破坏 import、subprocess 路径和 WebUI。
 
 ## 16. 建议拆分顺序
 
@@ -791,6 +851,12 @@ outlook/
   unlock.py
   pool.py
   paths.py
+  server/
+    main.py
+    auth_service.py
+    static/
+    tests/
+    log/
   README.md
   ANALYSIS.md
 ```
@@ -859,6 +925,7 @@ python register_outlook_standalone.py --count 1 --mode browser
 python mailbox_broker.py --port 8765
 python unlock_outlook.py --input outlook_accounts/accounts_xxx.txt
 python extract_graph_tokens.py outlook_accounts/accounts_xxx.txt
+D:\0Code2\py312\python.exe outlook/server/main.py --host 127.0.0.1 --port 8780
 ```
 
 最重要函数：
@@ -892,5 +959,8 @@ unlock_outlook.save_results()
 common.emails.next_email()
 common.emails.mark_used()
 common.emails.mark_error()
-```
 
+outlook.mailbox_graph.GraphMailboxClient.list_recipient_addresses()
+outlook.mailbox_graph.GraphMailboxClient.latest_message_title()
+outlook.server.main.create_app()
+```

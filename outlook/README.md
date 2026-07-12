@@ -1,11 +1,13 @@
 # Outlook Module
 
+Current module version: `26.7.12A`
+
 This directory is the target home for Outlook-specific code and documentation.
 
-Current Outlook-related files still live at the project root or under `common/`
-so existing CLI commands and WebUI entries keep working. Move them here in small
-steps and update imports, subprocess paths, WebUI schema, and documentation in
-the same change.
+The Graph metadata client and local mailbox server now live under `outlook/`.
+Registration, unlock, broker, and platform-facing mailbox helpers still live at
+the project root or under `common/` so existing CLI commands and WebUI entries
+keep working. Move the remaining modules here in small, compatible steps.
 
 ## Current Scope
 
@@ -38,8 +40,106 @@ Outlook-specific responsibilities include:
 | Path | Role |
 |---|---|
 | `mailbox_graph.py` | Reads Graph mailbox folder lists and message title metadata from RT account files. |
+| `server/` | Runs the local aiohttp mailbox UI and authenticated mailbox metadata API. |
 | `db/` | Runtime folder-list CSV output. Account CSV files are Git-ignored. |
 | `out/` | Runtime message-title CSV output. Account CSV files are Git-ignored. |
+
+## Local Mailbox Server
+
+The server reads account records from `graph_refresh_token/out/*.txt` and serves
+an authenticated mailbox UI plus JSON metadata endpoints. It never requests
+message body fields.
+
+### Start
+
+Use the project Python environment:
+
+```powershell
+D:\0Code2\py312\python.exe outlook/server/main.py --host 127.0.0.1 --port 8780
+```
+
+Open `http://127.0.0.1:8780`. The default account directory can be replaced with
+`--accounts-dir <path>`; Graph proxy use is opt-in through
+`--use-system-proxy`.
+
+### Authentication And Local Whitelist
+
+- Normal login validates the mailbox address and password stored in the matching
+  Graph account file.
+- Local passwordless login is enabled only when the original `Host` name and
+  `request.remote` are both exactly `127.0.0.1`.
+- `localhost`, proxy identity headers, and forwarded IP headers do not satisfy
+  the whitelist.
+- A local-whitelist session can access all account files. The server rechecks
+  host and IP on every request and invalidates that session if either changes.
+- A normal session can access only its own mailbox.
+
+### Mailbox UI
+
+The mailbox page provides:
+
+- an account list, with all accounts visible to a local-whitelist session;
+- a recipient-address list containing the primary address and observed aliases;
+- Graph mail folders and unread counts;
+- message title metadata with `Subject`, `From`, `To`, and received time columns;
+- a per-recipient link to the latest-message subject API.
+
+Recipient addresses are discovered from recent `toRecipients` metadata in the
+inbox and junk-mail folders. The primary mailbox address is always included,
+even when no recent message targets it. This is an observed-recipient list, not
+an authoritative Microsoft account alias inventory.
+
+### HTTP API
+
+All mailbox data endpoints require the current session cookie; the auth
+endpoints establish, inspect, or delete that session. `/health` is public.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Service name, version, time, and account-directory readiness. |
+| `POST` | `/api/auth/query` | Validate credentials or report local-whitelist availability. |
+| `POST` | `/api/auth/login` | Create the in-memory mailbox session. |
+| `GET` | `/api/auth/me` | Return the current session and a renewed mailbox entry token. |
+| `POST` | `/api/auth/logout` | Delete the current session cookie and server-side session. |
+| `GET` | `/api/accounts` | Return all authorized mailbox accounts. |
+| `GET` | `/api/folders?email=<address>` | Return Graph folder metadata. |
+| `GET` | `/api/messages?email=<address>&folder=inbox&top=20` | Return message title metadata, including `toRecipients`. |
+| `GET` | `/api/mailboxes/<address>/recipients` | Return the primary and observed recipient addresses. |
+| `GET` | `/api/mailboxes/<address>/messages/latest` | Return the latest inbox subject. |
+| `GET` | `/api/mailboxes/<address>/messages/latest?recipient=<address>` | Return the latest subject addressed to one alias. |
+
+Examples:
+
+```text
+GET /api/mailboxes/user@outlook.com/recipients
+GET /api/mailboxes/user@outlook.com/messages/latest
+GET /api/mailboxes/user@outlook.com/messages/latest?recipient=user%2B2%40outlook.com
+```
+
+The latest-message response deliberately exposes only the subject:
+
+```json
+{
+  "ok": true,
+  "mailbox": "user@outlook.com",
+  "recipient": "user+2@outlook.com",
+  "folder": "inbox",
+  "found": true,
+  "subject": "Example subject"
+}
+```
+
+### Logs And Verification
+
+Runtime logs and Playwright screenshots are written under
+`outlook/server/log/`. Its local `.gitignore` keeps every generated artifact out
+of Git while preserving the directory itself.
+
+```powershell
+D:\0Code2\py312\python.exe -m unittest discover -s outlook/server/tests -p "test_*.py"
+D:\0Code2\py312\python.exe -m py_compile outlook/mailbox_graph.py outlook/server/main.py
+node --check outlook/server/static/mailbox.js
+```
 
 ## Graph Mailbox Metadata Export
 

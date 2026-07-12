@@ -1,6 +1,6 @@
 # Graph refresh token 提取流程
 
-子项目版本：`26.7.9A`
+子项目版本：`26.7.12A`
 
 本文档专门说明项目中 Outlook / Microsoft Graph refresh token 的提取流程。本目录现在包含一个独立子项目实现：`oauth_graph.py`。它不会修改根目录现有流程，默认从本目录 `.env` 读取单个 Outlook 账号密码，并把结果写到本目录 `out/`。
 

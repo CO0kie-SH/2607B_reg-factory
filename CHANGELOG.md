@@ -1,5 +1,29 @@
 ﻿# 更新日志
 
+## 2026-07-12 — 26.7.12A Outlook 本地邮箱工作台
+
+**新增**
+- 新增 `outlook/server/` aiohttp 邮箱服务，包含独立登录页、邮箱工作台、认证服务、静态资源和单元测试。
+- 新增本机白名单登录：只有原始 `Host` 与客户端 IP 同时为 `127.0.0.1` 时可免密访问全部邮箱；`localhost` 和代理身份头不触发白名单。
+- 新增邮箱账号列表、Graph 文件夹列表、邮件标题表格和响应式移动端布局。邮件表格展示主题、发件人、收件人和接收时间。
+- 新增主邮箱与别名收件地址列表。地址从收件箱和垃圾邮件近期 `toRecipients` 元数据归集，主邮箱始终保留。
+- 新增标准邮箱 API：
+  - `GET /api/mailboxes/<address>/recipients`
+  - `GET /api/mailboxes/<address>/messages/latest`
+  - `GET /api/mailboxes/<address>/messages/latest?recipient=<alias>`
+- 最新邮件接口当前只返回 `subject`，不请求或返回正文。
+
+**权限与运行边界**
+- 普通账号会话只能访问登录邮箱，跨邮箱访问返回 `403`。
+- 本机全邮箱会话在 Host/IP 条件变化时立即注销。
+- 服务不信任 `X-Forwarded-For`、`X-Real-IP` 等客户端可控代理头。
+- `outlook/server/log/` 只提交 `.gitignore`；日志、截图、Python 缓存和账号运行数据不进入 Git。
+
+**文档与验证**
+- 更新根 README、项目总览、CO0kie 改写说明、Outlook README/ANALYSIS 和 Graph RT 子项目版本标记。
+- 使用真实 Graph 邮箱验证主地址与多个别名的收件人元数据及最新主题接口。
+- 新增 5 项邮箱 API/版本单元测试，并完成 Python/JavaScript 语法、普通账号越权、桌面端和移动端无溢出验证。
+
 ## 2026-07-11 — Gmail Android 注册优化（reCAPTCHA 自动解 + SMS 国家筛选）
 
 **新增**
