@@ -1,8 +1,8 @@
 # CO0kie 项目改写说明
 
-当前版本：`26.7.12A`
+当前版本：`26.7.13A`
 
-本文档是本 fork 的改写记录和后续重构入口。原项目说明仍以 `README.md` 为准；更完整的结构分析见 `PROJECT_OVERVIEW.md`、`outlook/ANALYSIS.md` 和 `graph_refresh_token/README.md`。
+本文档是本 fork 的改写记录和后续重构入口。原项目说明仍以 `README.md` 为准；更完整的结构分析见 `PROJECT_OVERVIEW.md`、`outlook/ANALYSIS.md`、`graph_refresh_token/README.md` 和 `outlook_create/README.md`。
 
 ## 1. 当前改写目标
 
@@ -11,6 +11,7 @@
 1. 梳理项目职责和接口，降低接手成本。
 2. 把 Outlook 相关内容单独拆出文档目录。
 3. 把 Microsoft Graph refresh token 提取流程做成独立子项目，方便单独调试和迭代。
+4. 把 Outlook 创建/注册链路单独沉淀到 `outlook_create/`，与读邮件、取 RT 子项目分开维护。
 
 这样做的原因是原项目入口多、运行时文件多、脚本之间直接 import 较多。直接搬文件容易破坏 CLI、WebUI 和现有自动化流程，所以当前采用“先文档分层，再子项目隔离，最后逐步迁移”的方式。
 
@@ -25,6 +26,10 @@
 | `graph_refresh_token/oauth_graph.py` | 独立的单账号 Graph refresh token 提取脚本。 |
 | `graph_refresh_token/.env.example` | 子项目环境变量模板。 |
 | `graph_refresh_token/requirements.txt` | 子项目最小依赖。 |
+| `outlook_create/README.md` | Outlook 创建/注册链路子项目说明。 |
+| `outlook_create/FLOW_ANALYSIS.md` | 主项目 Outlook 注册流程、Graph RT 入池、节点轮换和验证码处理分析。 |
+| `outlook_create/UPDATE_2026-07-13.md` | 2026-07-13 上游更新、合并和本地整理记录。 |
+| `outlook_create/scripts/` | Outlook 注册主循环和 standalone 执行器的本地包装/检查脚本。 |
 
 ## 3. Graph refresh token 子项目
 
@@ -399,3 +404,204 @@ GET /api/mailboxes/user@outlook.com/messages/latest?recipient=user%2B2%40outlook
 - 每个收件地址的最新主题 API。
 - 5 项单元测试、Python/JavaScript 语法检查。
 - Edge/Playwright 桌面与移动端布局、控制台错误和横向溢出检查。
+
+## 9. 2026-07-13 更新记录
+
+版本号：`26.7.13A`
+
+今天主要处理上游同步、Outlook 创建链路拆分，以及私有协议注册机的本地分析文档。
+
+### 9.1 合并上游更新
+
+检查 `upstream/main` 后发现上游新增 2 个提交：
+
+```text
+2332296 feat(outlook): 按住验证拟人化(WindMouse+OU震颤) + 节点探测轮换
+ceab1e6 feat(outlook): 抽不到 Graph token 的号单独存 outlook_no_graph.txt
+```
+
+已合并到本地 `main`，合并提交为：
+
+```text
+96cd119 Merge remote-tracking branch 'upstream/main'
+```
+
+合并时仅 `CHANGELOG.md` 有冲突，处理方式是同时保留本地 `26.7.12A Outlook 本地邮箱工作台` 记录和上游 `2026-07-13 Outlook 按住验证拟人化 + 节点探测轮换` 记录。
+
+合并后通过基础语法检查：
+
+```powershell
+py -3 -m py_compile outlook_reg_loop.py register.py register_outlook_standalone.py common/human_mouse.py outlook/mailbox_graph.py graph_refresh_token/oauth_graph.py
+```
+
+### 9.2 上游 Outlook 注册链路变化
+
+上游新增：
+
+```text
+common/human_mouse.py
+```
+
+该模块用于 Outlook / PerimeterX 按住验证，核心函数包括：
+
+```text
+windmouse_path()
+human_move_to()
+tremor_offsets()
+human_press_and_hold()
+```
+
+注册流程里原来的机械抖动被替换为：
+
+```text
+WindMouse 逼近轨迹 + Ornstein-Uhlenbeck 自相关震颤
+```
+
+同时 `outlook_reg_loop.py` 增加 Clash 节点探测轮换：
+
+```text
+_probe_delay()
+maybe_rotate_verified()
+```
+
+运行时先对候选节点执行 `/delay` 探测，跳过超时/过慢节点，再切换到延迟最低的可用节点。
+
+新增固定当前节点开关：
+
+```powershell
+python outlook_reg_loop.py --no-rotate
+```
+
+或：
+
+```powershell
+$env:OUTLOOK_NO_ROTATE = "1"
+```
+
+注册成功但 Graph RT 抽取失败时，现在写入：
+
+```text
+outlook_no_graph.txt
+```
+
+格式：
+
+```text
+email----password
+```
+
+该文件已加入 `.gitignore`，用于后续补抽 RT，不再直接丢弃可登录账号。
+
+### 9.3 新增 `outlook_create/` 子项目文档和脚本
+
+今天新增公开目录：
+
+```text
+outlook_create/
+```
+
+定位：只分析和包装“Outlook 创建/注册”链路，不负责读邮件，不保存账号、密码、RT、AT。
+
+新增文件：
+
+```text
+outlook_create/README.md
+outlook_create/FLOW_ANALYSIS.md
+outlook_create/UPDATE_2026-07-13.md
+outlook_create/scripts/inspect_outlook_create.py
+outlook_create/scripts/run_outlook_loop.ps1
+outlook_create/scripts/run_outlook_standalone.ps1
+```
+
+其中：
+
+- `FLOW_ANALYSIS.md` 记录 `outlook_reg_loop.py`、`register_outlook_standalone.py`、`extract_graph_tokens.py` 和 `common/human_mouse.py` 的整体调用链。
+- `UPDATE_2026-07-13.md` 记录今天合并的上游 Outlook 更新。
+- `inspect_outlook_create.py` 只做静态检查，不输出 `.env`、密码、RT、AT。
+- `run_outlook_loop.ps1` 包装 `outlook_reg_loop.py`。
+- `run_outlook_standalone.ps1` 包装 `register_outlook_standalone.py`。
+
+常用命令：
+
+```powershell
+.\outlook_create\scripts\run_outlook_loop.ps1 -Count 1
+.\outlook_create\scripts\run_outlook_loop.ps1 -Count 1 -NoRotate
+.\outlook_create\scripts\run_outlook_standalone.ps1 -Count 1 -Mode browser -Concurrency 1
+py -3 .\outlook_create\scripts\inspect_outlook_create.py
+```
+
+已验证：
+
+```powershell
+py -3 -m py_compile outlook_create\scripts\inspect_outlook_create.py
+py -3 outlook_create\scripts\inspect_outlook_create.py
+```
+
+### 9.4 私有目录 `outlook_create_Private/`
+
+本地存在私有目录：
+
+```text
+outlook_create_Private/
+```
+
+该目录已加入 `.gitignore`：
+
+```gitignore
+outlook_create_Private/
+```
+
+确认不会提交 Git。
+
+今天在私有目录里分析了 `outlook注册机.py`，并生成本地文档：
+
+```text
+outlook_create_Private/README.md
+outlook_create_Private/docs/FLOW_ANALYSIS.md
+outlook_create_Private/docs/FUNCTION_MAP.md
+outlook_create_Private/docs/USAGE_AND_NOTES.md
+```
+
+私有脚本是纯协议注册机，整体流程为：
+
+```text
+GET signup 页面
+-> 提取 ServerData / apiCanary / uaid
+-> CheckAvailableSigninNames
+-> risk/initialize
+-> CaptchaRun PxCaptcha2
+-> risk/verify 第一次触发 challenge
+-> 等 pressToken
+-> risk/verify 第二次提交 challengeSolution
+-> CreateAccount
+-> OAuth2 Authorization Code 提取 RT
+-> 写输出文件
+```
+
+私有脚本输出格式为：
+
+```text
+email----password----client_id----refresh_token
+```
+
+主项目 `emails.txt` 使用：
+
+```text
+email----password----refresh_token----client_id
+```
+
+因此如果后续要把私有脚本产物导入主项目，需要交换第 3/4 位。
+
+### 9.5 当前边界
+
+当前目录职责划分如下：
+
+| 目录 | 职责 |
+|---|---|
+| `graph_refresh_token/` | 已有账号的 Graph RT 提取。 |
+| `outlook/` | 读取邮箱文件夹、标题元信息、本地邮箱工作台。 |
+| `outlook_create/` | Outlook 创建/注册链路的公开文档和包装脚本。 |
+| `outlook_create_Private/` | 本地私有协议注册机与私有分析文档，不进 Git。 |
+
+版本 `26.7.13A` 的重点是把“创建账号”和“读取邮箱”进一步拆开：`outlook_create/` 只关心注册/入池，`outlook/` 继续关心 Graph 邮箱读取和本地工作台。
+
