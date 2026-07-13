@@ -20,6 +20,7 @@ tokens/**
 !tokens/.gitkeep
 emails.txt
 emails_*.txt
+outlook_no_graph.txt
 proxies.txt
 outlook_accounts/
 *_accounts/
@@ -48,6 +49,8 @@ proxies_clash.txt
 oauth_authorize_dump.html
 
 # Gmail Android release/offline binary payloads
+gmail_android/.runstate/
+gmail_android/logs/
 gmail_android/offline/bluestacks/*
 !gmail_android/offline/bluestacks/.gitkeep
 gmail_android/dist/

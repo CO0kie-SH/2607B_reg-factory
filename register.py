@@ -29,6 +29,7 @@ try:
     from common import proxy_switch
 except Exception:
     proxy_switch = None
+from common import human_mouse as _hm
 try:
     from check_outlook_status import check_account_api
 except Exception:
@@ -1036,47 +1037,29 @@ async def register_outlook(page):
 
                     print(f"  [outlook] press #{press_count}: target=({bx:.0f},{by:.0f}) {bw:.0f}x{bh:.0f}, click=({cx:.0f},{cy:.0f})")
 
-                    # 模拟真人鼠标轨迹：从随机起点经贝塞尔曲线移动到目标
-                    start_x = random.uniform(200, 800)
-                    start_y = random.uniform(200, 400)
-                    await page.mouse.move(start_x, start_y)
-                    await asyncio.sleep(random.uniform(0.3, 0.8))
+                    # 拟人按住(WindMouse 逼近 + OU 生理震颤)，取代旧的贝塞尔逼近 +
+                    # ±2px 均匀抖动。旧抖动是白噪声(无动量)，PerimeterX 行为模型可判；
+                    # 这里轨迹变速 + 自相关抖动更像真人手。is_done 用「hsprotect iframe
+                    # 消失」判定：进度条走满即松手，未满按住到 max_hold 兜底。
+                    async def _hold_done():
+                        try:
+                            b = await hs_iframes.first.bounding_box()
+                            return (not b) or b['height'] < 10
+                        except Exception:
+                            return True   # iframe 取不到多半是已导航/消失
 
-                    # 贝塞尔曲线移动（多步）
-                    steps = random.randint(15, 30)
-                    ctrl_x = (start_x + cx) / 2 + random.uniform(-100, 100)
-                    ctrl_y = (start_y + cy) / 2 + random.uniform(-80, 80)
-                    for step in range(1, steps + 1):
-                        t = step / steps
-                        # 二次贝塞尔
-                        mx = (1-t)**2 * start_x + 2*(1-t)*t * ctrl_x + t**2 * cx
-                        my = (1-t)**2 * start_y + 2*(1-t)*t * ctrl_y + t**2 * cy
-                        # 加微小抖动
-                        mx += random.uniform(-1.5, 1.5)
-                        my += random.uniform(-1.5, 1.5)
-                        await page.mouse.move(mx, my)
-                        # 人类鼠标移动速度不均匀
-                        await asyncio.sleep(random.uniform(0.005, 0.025))
-
-                    # 到达目标后短暂停顿
-                    await asyncio.sleep(random.uniform(0.1, 0.4))
-
-                    # 按下
-                    await page.mouse.down()
-                    print(f"  [outlook] mouse down at ({cx:.0f},{cy:.0f})")
-
-                    # 按住期间微小移动（真人手不可能完全静止）
-                    hold_time = random.uniform(16, 28)
-                    hold_start = asyncio.get_event_loop().time()
-                    while asyncio.get_event_loop().time() - hold_start < hold_time:
-                        jitter_x = cx + random.uniform(-2, 2)
-                        jitter_y = cy + random.uniform(-2, 2)
-                        await page.mouse.move(jitter_x, jitter_y)
-                        await asyncio.sleep(random.uniform(0.05, 0.2))
-
-                    # 松开
-                    await page.mouse.up()
-                    print(f"  [outlook] mouse up, held {hold_time:.1f}s")
+                    try:
+                        held, _passed = await _hm.human_press_and_hold(
+                            page, cx, cy, is_done=_hold_done,
+                            max_hold=random.uniform(16.0, 22.0), min_hold=2.0,
+                        )
+                    except Exception as _he:
+                        print(f"  [outlook] human_press_and_hold err, fallback: {_he}")
+                        await page.mouse.down()
+                        await asyncio.sleep(random.uniform(16, 22))
+                        await page.mouse.up()
+                        held = 18.0
+                    print(f"  [outlook] mouse up, held {held:.1f}s")
 
                     # 等待验证结果
                     await asyncio.sleep(random.uniform(3, 6))

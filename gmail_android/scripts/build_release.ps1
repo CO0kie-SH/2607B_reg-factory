@@ -23,7 +23,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $PackageRoot "offline\blues
 $files = @(
     "gmail_register_local.py",
     "appium_api.py",
+    "bluestacks.py",
     "config.py",
+    "coordinator.py",
+    "proxy_switch.py",
     "sms_provider.py",
     "requirements.txt",
     ".env.example",

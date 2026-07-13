@@ -13,7 +13,6 @@ Usage:
 import argparse
 import asyncio
 import json
-import math
 import os
 import random
 import re
@@ -48,6 +47,11 @@ try:
     import config  # noqa: F401
 except Exception:
     pass
+
+# 拟人鼠标(WindMouse 轨迹 + OU 震颤)用于 PerimeterX 按住验证。保证脚本被
+# importlib 从任意路径加载时也能找到 common 包。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import human_mouse as _hm
 
 # BitBrowser local API
 BITBROWSER_API = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
@@ -682,6 +686,28 @@ async def _maybe_confirm_before_register(page, tag, captcha_early_abort=False):
     print(f"  {tag} signup page opened: {page.url}")
     if title:
         print(f"  {tag} page title: {title[:100]}")
+
+    # 只有真出现「数据确认/许可」页时才点允许接受；正常直接进注册表单的不点，
+    # 否则会误点页面上别的 OK/确定链接(如 cookie 条、页脚)打乱流程。
+    # 先按内容判定：body 文本含数据许可关键词、或已在 privacynotice 页，才继续找按钮。
+    try:
+        page_text = await page.evaluate("() => document.body.innerText")
+    except Exception:
+        page_text = ""
+    ptl = (page_text or "").lower()
+    curl = (page.url or "").lower()
+    consent_hit = (
+        any(kw in page_text for kw in ["同意并继续", "个人数据", "数据导出", "数据确认",
+                                       "資料", "個人資料", "同意並繼續"])
+        or any(kw in ptl for kw in ["agree and continue", "consent", "data export",
+                                    "accepter et continuer", "consentement",
+                                    "your data", "personal data"])
+        or "privacynotice" in curl
+    )
+    if not consent_hit:
+        print(f"  {tag} auto-confirm: no data-consent gate, skip (进正常表单)")
+        return
+
     selectors = [
         'button:has-text("确认")', 'button:has-text("确定")',
         'button:has-text("同意")', 'button:has-text("接受")',
@@ -1393,52 +1419,36 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                         cy = by + bh * random.uniform(0.48, 0.62)
                     print(f"  {tag} press #{press_count}: ({cx:.0f},{cy:.0f}){' [btn]' if box_is_button else ' [box]'}")
 
-                    # Bezier mouse movement
-                    sx, sy = random.uniform(200, 800), random.uniform(200, 400)
-                    await page.mouse.move(sx, sy)
-                    await asyncio.sleep(random.uniform(0.3, 0.8))
-                    steps = random.randint(15, 30)
-                    ctrl_x = (sx + cx) / 2 + random.uniform(-100, 100)
-                    ctrl_y = (sy + cy) / 2 + random.uniform(-80, 80)
-                    for step in range(1, steps + 1):
-                        t = step / steps
-                        mx = (1 - t) ** 2 * sx + 2 * (1 - t) * t * ctrl_x + t ** 2 * cx + random.uniform(-1.5, 1.5)
-                        my = (1 - t) ** 2 * sy + 2 * (1 - t) * t * ctrl_y + t ** 2 * cy + random.uniform(-1.5, 1.5)
-                        await page.mouse.move(mx, my)
-                        await asyncio.sleep(random.uniform(0.005, 0.025))
+                    # 拟人按住(WindMouse 逼近 + OU 生理震颤)，取代旧的贝塞尔逼近 +
+                    # 正弦漂移。旧正弦是完全周期性运动，PerimeterX 行为模型秒判；这里的
+                    # 轨迹变速 + 自相关抖动更像真人手。is_done 复用 _captcha_visible 取反：
+                    # 进度条走满(按住按钮/iframe 消失)即松手，未满则按住到 max_hold 兜底。
+                    async def _hold_done():
+                        return not await _captcha_visible()
 
-                    await asyncio.sleep(random.uniform(0.1, 0.3))
-                    await page.mouse.down()
-
-                    # 拟人按住：关键是按住到进度条走满(captcha 消失)才松手 —— 不能固定短时长，
-                    # 太短(3-5s)进度没满就松手 => 不过。策略：持续按住并每 ~0.5s 检测 captcha 是否
-                    # 消失(进度满/通过)，一消失立刻松手；设一个较长上限(~14s)兜底防止卡死。
-                    max_hold = random.uniform(11.0, 15.0)
-                    hold_start = asyncio.get_event_loop().time()
-                    drift_phase = random.uniform(0, 2 * math.pi)
-                    drift_freq = random.uniform(1.5, 2.8)
-                    last_chk = 0.0
-                    passed_in_hold = False
-                    while True:
-                        elapsed = asyncio.get_event_loop().time() - hold_start
-                        if elapsed >= max_hold:
-                            break
-                        ph = drift_phase + elapsed * drift_freq
-                        await page.mouse.move(cx + 1.0 * math.sin(ph), cy + 0.6 * math.cos(ph * 1.3))
-                        # 进度满后 captcha 消失就松手（但至少按住 1.5s，避免误判刚加载的空隙）
-                        if elapsed > 1.5 and elapsed - last_chk > 0.5:
-                            last_chk = elapsed
+                    try:
+                        held, passed_in_hold = await _hm.human_press_and_hold(
+                            page, cx, cy, is_done=_hold_done,
+                            max_hold=random.uniform(11.0, 15.0), min_hold=1.5,
+                        )
+                    except Exception as _he:
+                        # 页面/context 已关闭(节点掉线或 captcha 过后导航销毁上下文)：
+                        # 此时 page 已死，再 down/up 只会二次抛错。直接标记未过、交给外层
+                        # 循环顶部的「captcha 消失=已通过 / URL 判定」去收尾，别在死页上乱按。
+                        _msg = f"{type(_he).__name__}: {_he}"
+                        print(f"  {tag} human_press_and_hold err: {_msg}")
+                        if "closed" in _msg.lower() or "TargetClosed" in _msg:
+                            print(f"  {tag} page/context 已关闭，跳过重按，交外层判定")
+                            held, passed_in_hold = 0.0, False
+                        else:
+                            # 其它异常(非页面关闭)：退回最简按住兜底，仍防崩
                             try:
-                                if not await _captcha_visible():
-                                    passed_in_hold = True
-                                    break
+                                await page.mouse.down()
+                                await asyncio.sleep(random.uniform(11.0, 14.0))
+                                await page.mouse.up()
                             except Exception:
                                 pass
-                        await asyncio.sleep(random.uniform(0.03, 0.08))
-
-                    await asyncio.sleep(random.uniform(0.05, 0.18))
-                    await page.mouse.up()
-                    held = asyncio.get_event_loop().time() - hold_start
+                            held, passed_in_hold = 12.0, False
                     print(f"  {tag} held {held:.1f}s{' (passed)' if passed_in_hold else ''}")
                     await asyncio.sleep(random.uniform(2, 4))
 

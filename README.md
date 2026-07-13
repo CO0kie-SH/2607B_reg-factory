@@ -107,7 +107,7 @@
 **面板能做什么**
 
 - 顶部状态灯：指纹浏览器 / Clash 是否在线 + 当前节点（实时刷新）。
-- 左侧按分类列出全部脚本（主流程 / 单平台注册 / 养号·邮箱 / 导出·上传），还有「外部工具」入口（如 Gmail 注册）。
+- 左侧按分类列出全部脚本（主流程 / 单平台注册 / 养号·邮箱 / 导出·上传）。
 - 点脚本 → 自动生成参数表单（勾选框 / 下拉 / 多选 / 输入框）→ 点「运行」→ 实时日志，可随时「停止」。
 - **⚙️ 配置(.env)** 页：分组填写所有密钥（密码框遮挡），每类带**连通测试按钮**——
   Clash（验证控制器 + secret）、指纹浏览器、sms-man / firefox.fun 接码平台，一键看通不通。
@@ -206,10 +206,14 @@ python mailbox_broker.py --port 8765
 python outlook_reg_loop.py                     # 循环
 python outlook_reg_loop.py --count 20          # 注册 20 个后退出
 python outlook_reg_loop.py --confirm-before-register --max-press 10 --timeout 300
+python outlook_reg_loop.py --no-rotate         # 固定当前节点，不轮换
 python register_outlook_standalone.py --count 5 --mode browser --confirm-before-register
 ```
 > Outlook 自注册成功后会立即提取 Microsoft Graph `refresh_token`；只有拿到 RT 的账号才写入 `_outlook_pool/` 与 `emails.txt`。
 > `emails.txt` / `outlook_accounts/accounts_*.txt` 格式为 `email----password----refresh_token----client_id`。
+>
+> **人机验证（PerimeterX 按住）**：按住动作用拟人鼠标（`common/human_mouse.py`：WindMouse 逼近轨迹 + Ornstein-Uhlenbeck 生理震颤），取代旧的正弦/均匀抖动，实测可稳定过验证。抖动幅度可用 `HUMAN_MOUSE_TREMOR_PX` 调，`HUMAN_MOUSE_DEBUG=1` 打印运动统计。
+> **节点轮换**：每次 attempt 前先探测 Clash 节点 `/delay`，跳过超时/过慢节点，在可用节点里挑延迟最低的再切换（`CLASH_MAX_LATENCY_MS` / `CLASH_PROBE_BATCH` 可调）。加 `--no-rotate`（或 `OUTLOOK_NO_ROTATE=1`）则固定当前节点、不切换。
 
 ### GitHub 注册（含 Arkose 验证视觉求解）
 ```bash

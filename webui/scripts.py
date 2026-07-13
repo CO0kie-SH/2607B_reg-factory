@@ -157,9 +157,12 @@ SCRIPTS = [
             {"flag": "--target-pool", "type": "int", "default": 0, "help": "池达到此数量就停(0=不限)"},
             {"flag": "--max-press", "type": "str", "default": "3", "help": "人机验证按住次数上限"},
             {"flag": "--confirm-before-register", "type": "bool", "default": False,
-             "help": "注册页打开后自动点确认，再开始填写"},
+             "help": "注册页打开后仅在出现数据许可页时才点确认(正常表单不点)"},
             {"flag": "--timeout", "type": "int", "default": 180, "help": "单号注册超时(秒)"},
             {"flag": "--sleep", "type": "int", "default": 5, "help": "每次注册间隔(秒)"},
+            {"flag": "--sleep-when-full", "type": "int", "default": 60, "help": "池达标时的休眠间隔(秒)"},
+            {"flag": "--no-rotate", "type": "bool", "default": False,
+             "help": "不轮换 Clash 节点，固定用当前节点(也可用 OUTLOOK_NO_ROTATE=1)"},
         ],
     },
     {
@@ -251,11 +254,11 @@ EXTERNAL_LINKS = [
 
 # ============================================================ 内嵌功能页
 # 直接在面板里 iframe 内嵌的外部页面 + 可选 sms-man 接码助手。
-EMBED_PAGES = [
-    {"id": "gmail", "title": "Gmail 注册", "url": "https://gmails.zeabur.app/gq",
-     "desc": "在线 Gmail 注册(内嵌)。右侧接码助手可租号 + 同号多次取验证码,人工复制粘贴到左侧表单。",
-     "sms_helper": True, "sms_service_default": "google"},
-]
+# 空列表时前端不渲染「功能」导航区(app.js: if(EMBEDS.length))，内嵌视图/接码助手一并隐藏。
+# Gmail 注册已下线；如需重新内嵌某页，按下面注释里的字段格式往列表里加即可。
+#   {"id": "xxx", "title": "标题", "url": "https://...", "desc": "说明",
+#    "sms_helper": True, "sms_service_default": "google"}
+EMBED_PAGES = []
 
 
 # ============================================================ .env 配置 schema

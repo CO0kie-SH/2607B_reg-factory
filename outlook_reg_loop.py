@@ -39,6 +39,9 @@ ARTIFACT_DIR = os.path.dirname(os.path.abspath(__file__))
 POOL_DIR = os.path.join(ARTIFACT_DIR, "_outlook_pool")
 # 账号注册侧消费的池（common/emails.next_email 读取），格式 email----password----token----clientid
 EMAILS_POOL = os.path.join(ARTIFACT_DIR, "emails.txt")
+# 注册成功但 Graph refresh_token 抽取失败的号：邮箱+密码单独存这里，别丢。
+# 之后可用 extract_graph_tokens.py 对这个文件补抽 RT，或浏览器登录直接用。
+NO_GRAPH_POOL = os.path.join(ARTIFACT_DIR, "outlook_no_graph.txt")
 
 STANDALONE_PATH = os.environ.get(
     "SELF_REG_SCRIPT_PATH",
@@ -56,6 +59,13 @@ except ImportError:
 
 def log(msg, level="INFO"):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] [{level}] {msg}", flush=True)
+
+
+def _env_truthy_norotate():
+    """OUTLOOK_NO_ROTATE 环境变量：1/true/yes/on 任一即视为开启不轮换。"""
+    return (os.environ.get("OUTLOOK_NO_ROTATE", "") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def ensure_clash_proxy_env():
@@ -129,6 +139,19 @@ def init_clash():
 # 子串匹配（节点名含任一即排除）。可经 CLASH_EXCLUDE_NODES 环境变量追加（逗号分隔）。
 _CN_EXCLUDE_HINTS = ("国内直连", "直连", "DIRECT", "大陆", "国内", "China", "回国")
 
+def _ordered_nodes(client, group, excluded):
+    """按名称排序的可用节点列表(已排除 CN/excluded)。不做区域优先，节点平等轮换。"""
+    try:
+        nodes = [n for n in client.list_nodes(group) if n not in excluded]
+    except Exception as e:
+        log(f"list nodes err: {type(e).__name__}: {e}", "WARN")
+        return []
+    return sorted(nodes)
+
+
+# 本会话已试过的节点(跨 attempt 累积)，保证逐个用，全用完再重置一轮。
+_TRIED_NODES = set()
+
 
 def _rotate_excluded(client, group):
     """把 CN/直连子串提示解析成 GLOBAL 组里真实节点名集合（pick_node 用精确匹配，
@@ -148,32 +171,152 @@ def _rotate_excluded(client, group):
 
 def maybe_rotate(client, group, strategy="round_robin", max_latency_ms=6000,
                  mixed_port=7897):
-    """Rotate to a fresh Clash node and verify egress IP actually changed.
-    Uses rotate_with_verify which recurses into nested selector groups when
-    the outer switch hits another group (e.g. GLOBAL -> 📲 Telegram is just
-    another selector, not a real node).
-
-    排除国内直连/大陆节点（见 _CN_EXCLUDE_HINTS）：中国 IP 注册 Outlook 基本必挂。"""
+    """切到下一个节点并验证出口 IP 变了。按名称顺序平等轮换：在 _ordered_nodes 排好
+    的列表里挑第一个本会话没试过的节点，全试过则重置循环。排除 CN/直连。"""
     if client is None or not group:
         return None
     try:
         excluded = _rotate_excluded(client, group)
-        if excluded:
-            log(f"clash rotate excluding CN/direct nodes: {sorted(excluded)}")
-        info = _clash_verge.rotate_with_verify(
-            client, group, strategy=strategy,
-            max_latency_ms=max_latency_ms,
-            mixed_port=mixed_port,
-            settle_sec=1.5,
-            excluded=excluded,
-        )
-        if info.get("ip_changed"):
-            log(f"clash IP {info.get('ip_before')} -> {info.get('ip_after')} (group={info.get('group')})")
-        else:
-            log(f"clash rotate: IP unchanged ({info.get('ip_before')})", "WARN")
-        return info
+        ordered = _ordered_nodes(client, group, excluded)
+        if not ordered:
+            log("no usable node after exclude", "WARN")
+            return None
+        # 挑【第一个本会话没试过的】节点，全试过则重置循环。
+        global _TRIED_NODES
+        nxt = next((n for n in ordered if n not in _TRIED_NODES), None)
+        if nxt is None:           # 一轮全试过，重置再来
+            _TRIED_NODES = set()
+            nxt = ordered[0]
+        _TRIED_NODES.add(nxt)
+        ip_before = None
+        try:
+            ip_before = _clash_verge.public_ip(timeout=5, mixed_port=mixed_port)
+        except Exception:
+            pass
+        client.switch(group, nxt)
+        try:
+            client.close_connections()
+        except Exception:
+            pass
+        time.sleep(1.5)
+        ip_after = None
+        try:
+            ip_after = _clash_verge.public_ip(timeout=5, mixed_port=mixed_port)
+        except Exception:
+            pass
+        changed = bool(ip_before and ip_after and ip_before != ip_after)
+        log(f"clash rotate -> {nxt} IP {ip_before}->{ip_after} "
+            f"{'changed' if changed else 'UNCHANGED'}")
+        return {"ok": True, "next": nxt, "ip_changed": changed,
+                "ip_before": ip_before, "ip_after": ip_after}
     except Exception as e:
         log(f"clash rotate err: {type(e).__name__}: {e}", "WARN")
+        return None
+
+
+def _probe_delay(client, node, timeout_ms):
+    """探测单节点延迟(ms)，超时/出错返回 None。用 Clash 自带 /delay(直接测该节点，
+    无需先 switch)。"""
+    try:
+        return client.delay(node, _clash_verge.DEFAULT_TEST_URL, timeout_ms)
+    except Exception:
+        return None
+
+
+def maybe_rotate_verified(client, group, mixed_port=7897):
+    """轮换到【可用】节点：切之前先探 /delay，跳过超时的，在一批里挑延迟最低的。
+
+    旧逻辑按名字顺序直接 switch，只在切完后验 IP —— 会把整整一次 attempt(~3min)
+    浪费在死节点/超时节点上。现在改成：先探测候选节点延迟，超时(None)或超过
+    CLASH_MAX_LATENCY_MS 的直接跳过并标记试过，在 CLASH_PROBE_BATCH 个可用节点里
+    选延迟最低的再 switch。本会话所有节点都试过则重置一轮。
+    """
+    if client is None or not group:
+        return None
+    try:
+        excluded = _rotate_excluded(client, group)
+        ordered = _ordered_nodes(client, group, excluded)
+        if not ordered:
+            log("no usable node after exclude", "WARN")
+            return None
+
+        # 延迟上限 + 每轮探测多少个候选后就在可用的里挑最优
+        try:
+            max_latency_ms = int(os.environ.get("CLASH_MAX_LATENCY_MS", "2500") or "2500")
+        except Exception:
+            max_latency_ms = 2500
+        try:
+            probe_batch = max(1, int(os.environ.get("CLASH_PROBE_BATCH", "8") or "8"))
+        except Exception:
+            probe_batch = 8
+        probe_tmo = max_latency_ms + 1500
+
+        global _TRIED_NODES
+        # 本会话把所有节点都试过了 -> 重置，开新一轮
+        if all(n in _TRIED_NODES for n in ordered):
+            _TRIED_NODES = set()
+
+        ip_before = None
+        try:
+            ip_before = _clash_verge.public_ip(timeout=5, mixed_port=mixed_port)
+        except Exception:
+            pass
+
+        # 1) 探测候选：跳过超时/过慢，在一批可用节点里挑延迟最低的
+        best, best_d, probed = None, 1 << 30, 0
+        for node in ordered:
+            if node in _TRIED_NODES:
+                continue
+            if probed >= probe_batch and best is not None:
+                break
+            d = _probe_delay(client, node, probe_tmo)
+            probed += 1
+            if d is None or d > max_latency_ms:
+                _TRIED_NODES.add(node)   # 超时/过慢：本轮不再考虑
+                log(f"clash probe skip {node} "
+                    f"({'timeout' if d is None else str(d) + 'ms >' + str(max_latency_ms)})")
+                continue
+            if d < best_d:
+                best, best_d = node, d
+
+        # 2) 一批里全超时？放宽 batch，继续往后找第一个能响应的(哪怕慢)，避免整轮无节点
+        if best is None:
+            for node in ordered:
+                if node in _TRIED_NODES:
+                    continue
+                d = _probe_delay(client, node, probe_tmo)
+                if d is not None:
+                    best, best_d = node, d
+                    break
+                _TRIED_NODES.add(node)
+
+        if best is None:
+            log("no responsive Clash node (all timed out)", "WARN")
+            return {"ok": False, "next": None, "ip_changed": False,
+                    "ip_before": ip_before, "ip_after": None}
+
+        # 3) 切到选中的可用节点并验出口 IP
+        _TRIED_NODES.add(best)
+        client.switch(group, best)
+        try:
+            client.close_connections()
+        except Exception:
+            pass
+        time.sleep(1.5)
+
+        ip_after = None
+        try:
+            ip_after = _clash_verge.public_ip(timeout=5, mixed_port=mixed_port)
+        except Exception:
+            pass
+        changed = bool(ip_before and ip_after and ip_before != ip_after)
+        ok = bool(ip_after)
+        log(f"clash rotate -> {best} ({best_d}ms) IP {ip_before}->{ip_after} "
+            f"{'changed' if changed else 'UNCHANGED'} {'OK' if ok else 'BAD'}")
+        return {"ok": ok, "next": best, "ip_changed": changed,
+                "ip_before": ip_before, "ip_after": ip_after, "latency_ms": best_d}
+    except Exception as e:
+        log(f"clash rotate verified err: {type(e).__name__}: {e}", "WARN")
         return None
 
 
@@ -390,6 +533,27 @@ def append_to_emails_pool(email, password):
         log(f"append_to_emails_pool failed: {type(e).__name__}: {e}", "WARN")
 
 
+def append_no_graph_account(email, password):
+    """注册成功但 Graph refresh_token 提取失败的号：邮箱+密码单独存到 NO_GRAPH_POOL，
+    别丢弃。这些号本体有效(能登录/收码)，只是没抽到 RT，后续可用
+    extract_graph_tokens.py 重跑补 token 再入池。去重按邮箱。格式 email----password。"""
+    try:
+        existing = set()
+        if os.path.isfile(NO_GRAPH_POOL):
+            with open(NO_GRAPH_POOL, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        existing.add(line.split("----")[0].strip().lower())
+        if email.lower() in existing:
+            return
+        with open(NO_GRAPH_POOL, "a", encoding="utf-8") as f:
+            f.write(f"{email}----{password}\n")
+        log(f"outlook_no_graph.txt += {email} (无 RT，已存待补)", "OK")
+    except Exception as e:
+        log(f"append_no_graph_account failed: {type(e).__name__}: {e}", "WARN")
+
+
 def write_record(record):
     os.makedirs(POOL_DIR, exist_ok=True)
     safe = record["email"].replace("@", "_at_").replace("/", "_")
@@ -521,7 +685,13 @@ def main():
                     help="seconds between attempts (after fail or success)")
     ap.add_argument("--sleep-when-full", type=int, default=60,
                     help="seconds to sleep when pool is at target")
+    ap.add_argument("--no-rotate", action="store_true",
+                    help="不轮换 Clash 节点：每次 attempt 都用当前节点，不切换/不探测。"
+                         "也可用环境变量 OUTLOOK_NO_ROTATE=1 开启。")
     args = ap.parse_args()
+
+    # 不轮换开关：命令行 --no-rotate 或 env OUTLOOK_NO_ROTATE 任一为真即生效。
+    no_rotate = args.no_rotate or _env_truthy_norotate()
 
     os.environ.setdefault("OUTLOOK_REG_MAX_PRESS", args.max_press)
     if args.confirm_before_register:
@@ -545,7 +715,12 @@ def main():
     # Initialize Clash controller for per-attempt node rotation. MS PerimeterX
     # learns the egress IP fast — without rotation we get ERR_CONNECTION_CLOSED
     # after 1-2 signups from the same node.
-    clash_client, clash_group = init_clash()
+    # --no-rotate / OUTLOOK_NO_ROTATE 时不连 Clash 控制器，固定用当前节点。
+    if no_rotate:
+        clash_client, clash_group = None, None
+        log("node rotation DISABLED (--no-rotate / OUTLOOK_NO_ROTATE) — 固定当前节点")
+    else:
+        clash_client, clash_group = init_clash()
 
     log(f"pool dir: {POOL_DIR}")
     os.makedirs(POOL_DIR, exist_ok=True)
@@ -565,7 +740,14 @@ def main():
             time.sleep(args.sleep_when_full)
             continue
         # Rotate Clash node before each attempt so MS PX sees a fresh IP.
-        maybe_rotate(clash_client, clash_group)
+        # --no-rotate / OUTLOOK_NO_ROTATE 开启时跳过轮换，固定用当前节点。
+        if not no_rotate:
+            rotate_info = maybe_rotate_verified(clash_client, clash_group)
+            if clash_client is not None and clash_group and rotate_info and not rotate_info.get("ok"):
+                failed += 1
+                log("skip attempt: no reachable Clash egress", "WARN")
+                time.sleep(args.sleep)
+                continue
         log(f"=== attempt #{n}  (pool={ps}, succ={succ}, fail={failed}) ===")
         t0 = time.time()
         email = password = None
@@ -581,7 +763,8 @@ def main():
             graph = extract_graph_for_account(email, password)
             if not graph or not graph.get("refresh_token"):
                 failed += 1
-                log(f"registered but graph RT missing; not saved: {email}", "WARN")
+                append_no_graph_account(email, password)  # 号有效但没抽到 RT：单独存待补
+                log(f"registered but graph RT missing; saved to outlook_no_graph.txt: {email}", "WARN")
                 time.sleep(args.sleep)
                 continue
             fname = write_record({
