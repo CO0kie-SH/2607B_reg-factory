@@ -2,7 +2,7 @@
 
 # 🏭 reg-factory
 
-### Outlook · Gmail · ChatGPT · Grok · Claude · Gemini · GitHub · Google One 全自动注册/授权机
+### Outlook · Gmail · ChatGPT · Grok · Claude · Gemini · Google One 全自动注册/授权机
 
 **自动批量注册 Outlook / Gmail 邮箱 → 平台注册 / 订阅授权 → 导出 cookie 或导入 SUB2API / CPA**
 
@@ -222,41 +222,19 @@ python register_outlook_standalone.py --count 5 --mode browser --confirm-before-
 > **人机验证（PerimeterX 按住）**：按住动作用拟人鼠标（`common/human_mouse.py`：WindMouse 逼近轨迹 + Ornstein-Uhlenbeck 生理震颤），取代旧的正弦/均匀抖动，实测可稳定过验证。抖动幅度可用 `HUMAN_MOUSE_TREMOR_PX` 调，`HUMAN_MOUSE_DEBUG=1` 打印运动统计。
 > **节点轮换**：每次 attempt 前先探测 Clash 节点 `/delay`，跳过超时/过慢节点，在可用节点里挑延迟最低的再切换（`CLASH_MAX_LATENCY_MS` / `CLASH_PROBE_BATCH` 可调）。加 `--no-rotate`（或 `OUTLOOK_NO_ROTATE=1`）则固定当前节点、不切换。
 
-### GitHub 注册（含 Arkose 验证视觉求解）
-```bash
-python register_github.py --auto                       # 从 _outlook_pool 取邮箱，跑完整流程
-python register_github.py --auto --email a@x.com --password xxx   # 指定邮箱
-python register_github.py                              # 探索模式：填到验证就停、保留窗口
-```
-GitHub 注册页是单页表单（邮箱/密码/用户名/国家），提交后是 **Arkose FunCaptcha**（octocaptcha 包裹）。
-本项目用 **agent-captcha 视觉投票求解器**（`common/agent_captcha.py`）过验证，而非传统打码平台：
-- 进拼图后按题目文本**自动判变体**：`sequence`（4图标逐环序列）/ `rotate`（3D朝向匹配）/ `character`（小人踩格，最难，默认跳过换窗口）。
-- 每轮把候选拼成一张大图、本地秒级增强（PIL，控体积避免传输超时），交 **多个多模态模型并发投票**（gemini-3.5-flash / gpt-5.5 / gemini-3.1-pro / claude-opus，多数表决），driver 据答案点箭头 + Submit。
-- 复盘图落 `screenshots_github/REVIEW_rN.png`（红框=最终选择，彩框=各模型投票）。
-- 网关/key 全走 `.env`（`VISION_*` / `VOTE_*` / `IMAGE_EDIT_*`，见 `.env.example`）。
+### `agent-captcha` 视觉投票求解器
 
-> 说明：验证关已实测可过；GitHub 对批量 Outlook 邮箱有风控（提示 "This email can't be used"），建议配可用邮源。
+`common/agent_captcha.py` 提供独立的 Arkose 视觉验证码求解内核：
 
-**验证出现时的页面**（Create account 后跳 "Verify your account" + octocaptcha）：
-
-<img src="assets/github_captcha/01_verify_screen.jpg" alt="GitHub Arkose 验证出现" width="640" />
-
-**三种拼图变体**（脚本按题目文本自动分派对应解法）：
-
-| sequence（逐环序列） | rotate（3D 朝向） |
-|---|---|
-| <img src="assets/github_captcha/02_variant_sequence.jpg" alt="sequence 变体" width="340" /> | <img src="assets/github_captcha/03_variant_rotate.jpg" alt="rotate 变体" width="340" /> |
-| **character（小人踩格，最难）** | **wires（连线对图标）** |
-| <img src="assets/github_captcha/04_variant_character.jpg" alt="character 变体" width="340" /> | <img src="assets/github_captcha/06_variant_wires.jpg" alt="wires 变体" width="340" /> |
-
-**复盘图**（每轮落 `screenshots_github/REVIEW_rN.png`）：候选拼成带编号网格，**粗红框 = 最终投票选择**，**彩色细框 = 各模型各自的投票**，底部黄字列出「模型:答案」，方便人工核对是谁选对/选错：
-
-<img src="assets/github_captcha/05_review_vote.jpg" alt="多模型投票复盘图" width="420" />
-
+- 按题目文本自动识别 `sequence`、`rotate`、`character`、`wires` 等挑战变体。
+- 将候选图拼接、编号并用 PIL 本地增强，在控制传输体积的同时保留判题细节。
+- 并发请求多个多模态模型，通过多数投票选择答案，再由 driver 执行点击、导航或提交。
+- 生成带最终选择和各模型投票的复盘标注图，便于定位误判和调整 prompt。
+- 网关、模型和密钥统一读取 `.env` 中的 `VISION_*`、`VOTE_*`、`IMAGE_EDIT_*` 配置。
 
 ### 通用验证码求解库 `vision_solver/`（过 hCaptcha 等）
 
-把上面 GitHub Arkose 的投票内核**复制+泛化**成独立库：用 `CaptchaSpec`（frame / 选择器 / prompt / 交互模式）描述**任意一类**验证码，不写死平台，多模型视觉投票求解，通用 driver 据答案驱动浏览器。
+`vision_solver/` 将 `agent-captcha` 的投票内核泛化成独立库：用 `CaptchaSpec`（frame / 选择器 / prompt / 交互模式）描述**任意一类**验证码，不写死平台，多模型视觉投票求解，通用 driver 据答案驱动浏览器。
 
 **新增解新版 hCaptcha** —— 实测发现现代 hCaptcha 把整个挑战**渲染进单个 `<canvas>`**（没有任何可点的 DOM tile），传统「枚举 tile 点击」无效。本库提供两种画布 driver：
 
@@ -522,7 +500,6 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 | `register_three_platforms.py` | 三平台（Claude/ChatGPT/Grok）注册编排 |
 | `register.py` / `register_chatgpt.py` | Claude / ChatGPT 注册主流程 |
 | `register_grok_http.py` | Grok 注册主流程（纯 HTTP 协议，不开浏览器；`register_grok.py` 为旧的浏览器版，保留备用） |
-| `register_github.py` | GitHub 注册主流程（单页表单 + Arkose 验证视觉求解 + 邮件 launch code） |
 | `outlook_reg_loop.py` / `register_outlook_standalone.py` | Outlook 自注册养号 |
 | `unlock_outlook.py` / `extract_graph_tokens.py` | Outlook 解锁 / 提取 Graph refresh_token |
 | `oauth_codex.py` | Codex OAuth → SUB2API + CPA（带 refresh_token，自动接码过 add-phone，支持 `--manual-phone`） |
@@ -556,7 +533,7 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 | `presets/` | 预置 spec：`recaptcha_v2` / `arkose_match` / `hcaptcha`(画布点击) / `hcaptcha_drag`(画布拖拽) |
 | `tests/` | hCaptcha 过码端到端 / 鲁棒性跑分脚本 |
 
-> 由 `common/agent_captcha.py` 的内核**复制+泛化**而来，独立成库、独立演进，不影响现有 GitHub Arkose 流程。详见 `vision_solver/README.md`。
+> 由 `common/agent_captcha.py` 的内核泛化而来，独立成库、独立演进。详见 `vision_solver/README.md`。
 
 **协作约定**
 
