@@ -42,6 +42,8 @@
 
 ---
 
+**当前版本：`26.7.12A`**
+
 **reg-factory** 是一套全自动注册流水线：先自注册 **Outlook** 邮箱，再用同一邮箱在
 **ChatGPT / Grok / Claude** 上批量注册账号，并导出可直登的 cookie。底层用
 **比特浏览器(BitBrowser) / AdsPower** 做指纹隔离、**Clash Verge** 做节点切换绕区域封锁与 Cloudflare 风控、
@@ -358,6 +360,29 @@ python extract_graph_tokens.py accounts.txt --concurrency 10     # 并发数(默
 ```
 > 走系统代理（Clash），避免 `account.live.com` 限流；账号文件每行 `email----password----...`。
 
+### Outlook 本地邮箱工作台
+
+`outlook/server/` 提供独立的 aiohttp 邮箱服务，读取
+`graph_refresh_token/out/*.txt` 中的 Graph 账号记录：
+
+```powershell
+D:\0Code2\py312\python.exe outlook/server/main.py --host 127.0.0.1 --port 8780
+```
+
+浏览器访问 `http://127.0.0.1:8780`。当请求的原始 `Host` 和客户端 IP
+同时为 `127.0.0.1` 时可本机免密登录；`localhost` 不属于白名单。
+
+工作台支持邮箱账号切换、文件夹与邮件标题查看、主邮箱和已发现别名收件地址列表。
+邮件表格展示 `主题 / 发件人 / 收件人 / 接收时间`，不读取正文。
+
+```text
+GET /api/mailboxes/user@outlook.com/recipients
+GET /api/mailboxes/user@outlook.com/messages/latest
+GET /api/mailboxes/user@outlook.com/messages/latest?recipient=user%2B2%40outlook.com
+```
+
+接口沿用页面登录会话和邮箱权限。详细说明见 `outlook/README.md`。
+
 ### Clash 节点自检
 ```bash
 python -m common.proxy_switch list             # 列出 GLOBAL 组节点
@@ -628,6 +653,16 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 | `proxy_switch.py` | Clash 节点切换 |
 | `agent_captcha.py` | Arkose 验证视觉投票求解器：变体分派 + 多模型并发投票 + 图片增强/拼接 + 复盘标注 |
 
+**Outlook 子项目（`outlook/`）**
+
+| 模块 | 职责 |
+|---|---|
+| `mailbox_graph.py` | Graph 账号加载、文件夹读取、邮件标题元数据和收件地址归集 |
+| `server/main.py` | aiohttp 邮箱页面、认证 API、邮箱元数据 API |
+| `server/auth_service.py` | 账号密码校验和内存会话管理 |
+| `server/static/` | 登录页、邮箱工作台和响应式样式 |
+| `server/log/` | 本地运行日志和验证截图，仅提交 `.gitignore` |
+
 **通用验证码求解库（`vision_solver/`）**
 
 | 模块 | 职责 |
@@ -658,6 +693,7 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 | `_outlook_pool/` | outlook_reg_loop 产出的待用号（JSON 内含 `refresh_token` / `client_id`） |
 | `tri_register_logs/` | 三平台注册日志 |
 | `screenshots*/` | 调试截图 |
+| `outlook/server/log/` | Outlook 邮箱服务日志与本地 UI 验证截图 |
 
 以上运行期数据均被 `.gitignore` 忽略，发布包内为空。
 

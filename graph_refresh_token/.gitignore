@@ -1,0 +1,8 @@
+.env
+.venv/
+out/
+output/
+oauth_debug_*.html
+*.log
+__pycache__/
+*.pyc

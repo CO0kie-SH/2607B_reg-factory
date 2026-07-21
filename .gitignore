@@ -17,6 +17,9 @@ __pycache__/
 .venv/
 venv/
 
+# IDE
+.idea/
+
 # 运行期数据 / PII（账号、cookie、日志、截图）
 cookies/**
 !cookies/.gitkeep
@@ -62,3 +65,5 @@ gmail_android/offline/bluestacks/*
 gmail_android/dist/
 screenshots_vision/
 .custom_test_domain
+outlook_create_Private/
+
