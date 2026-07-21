@@ -1,4 +1,11 @@
-﻿# 更新日志
+# 更新日志
+
+## 2026-07-21 — CO0kie 26.7.21A Grok 知识库与上游合并
+
+- 将上游更新至 `470ce80`，并合并 CO0kie fork 原有 Outlook、Graph RT 和文档改动。
+- 新增 `co0kie_grok/` 文档集，完整整理 Grok HTTP/浏览器注册、临时邮箱、Turnstile、SSO、xAI OAuth、SUB2API 和 webchat2api 链路。
+- 在 `PROJECT_OVERVIEW.md` 增加 Grok 纯 HTTP 注册流程图、关键阶段、命令示例和源码入口。
+- 更新 `README.md`、`PROJECT_OVERVIEW.md` 和 `CO0kie_REWRITE_NOTES.md` 的当前版本为 `26.7.21A`。
 
 ## 2026-07-14 — Grok 纯 HTTP 协议注册（不开浏览器） + WebUI 接入 + 移除 ruyi 版
 
@@ -239,6 +246,3 @@
 **优化**
 - README 补全「Codex 订阅授权 & token 上传」「项目结构 / 模块职责」「典型一条龙用法」，适配多人协作。
 - 清理冗余代码，半成品路径标注 WIP。
-
-
-

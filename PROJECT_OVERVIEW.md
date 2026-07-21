@@ -1,6 +1,6 @@
 # reg-factory 项目说明与接口清单
 
-当前 CO0kie 改写版本：`26.7.12A`
+当前 CO0kie 改写版本：`26.7.21A`
 
 本文档面向项目接手、二次开发和接口排查。它说明这个仓库在做什么、核心流程如何串联，以及项目暴露了哪些命令行、HTTP、本地适配和文件接口。
 
@@ -23,7 +23,7 @@
    - 标准 token 输出到 `tokens/`，例如 ChatGPT session、CPA codex JSON、chatgpt2api 导入对象、Grok SSO。
 4. 可选导入下游系统。
    - ChatGPT/Codex：SUB2API、CPA、chatgpt2api。
-   - Grok：webchat2api。
+   - Grok：SUB2API Grok OAuth、webchat2api。
 5. 提供本地 WebUI。
    - WebUI 读取脚本 schema 自动渲染表单，提交后以子进程运行脚本，并通过 SSE 推送日志。
 
@@ -39,6 +39,7 @@
 | `outlook/` | Outlook 子项目：Graph 邮箱元数据、aiohttp 邮箱工作台、模块文档和运行时目录。 |
 | `gmail_android/` | Gmail Android/Appium 本地自动化模块和安装脚本。 |
 | `vision_solver/` | 通用视觉验证码求解器，使用多模态模型投票和 Playwright driver。 |
+| `co0kie_grok/` | CO0kie 整理的上游 Grok 知识库，覆盖 HTTP/浏览器注册、临时邮箱、Turnstile、SSO、OAuth 和下游导入。 |
 | `assets/` | 说明图、二维码、GitHub 验证截图示例等静态资源。 |
 | `cookies/` | 运行时 cookie 输出目录，仓库只保留 `.gitkeep`。 |
 | `tokens/` | 运行时 token 输出目录，仓库只保留 `.gitkeep`。 |
@@ -147,6 +148,53 @@ python register_chatgpt.py --count 1 --codex --codex-group codex
 python register_grok.py --count 1 --node auto
 python register_github.py --auto --email a@x.com --password xxx
 ```
+
+### 3.5 Grok 纯 HTTP 注册流程
+
+当前 WebUI、三平台编排和端到端编排中的 Grok 主入口为 `register_grok_http.py`。它使用 `curl_cffi` 浏览器指纹和 `xconsole_client` 协议客户端完成注册，不启动真实浏览器。`register_grok.py` 浏览器实现继续保留，用于 Outlook 邮箱、页面调试和协议回退等兼容场景。
+
+```mermaid
+flowchart TD
+    A[选择或自动探测 Clash 节点] --> B[访问 Grok 并加载 xAI 注册页]
+    B --> C[获取 CF 会话、Next.js action 和 Turnstile sitekey]
+    C --> D[创建临时邮箱]
+    D --> E[xAI gRPC-web 请求发送验证码]
+    E --> F[轮询邮箱取得 XXX-XXX 验证码]
+    F --> G[gRPC-web 提交验证码]
+    G --> H[校验随机密码]
+    H --> I[求解 Turnstile]
+    I --> J[Next.js Server Action 创建账号]
+    J --> K[从 RSC/Cookie 链获取 SSO]
+    K -->|失败| L[CreateSession 密码登录回退]
+    K --> M[保存 tokens/grok/*.sso.json]
+    L --> M
+    M --> N{是否导入下游}
+    N -->|SUB2API| O[SSO 转 xAI OAuth 并创建 Grok 账号]
+    N -->|webchat2api| P[注入 Grok SSO]
+```
+
+关键阶段：
+
+1. `proxy_switch.find_working_node()` 探测能够完整加载 xAI Next.js 注册页面的节点。
+2. `XConsoleAuthClient.visit_home()` 和 `load_signup_page()` 建立会话并提取动态注册参数。
+3. `common.temp_email.create_mailbox()` 按 `TEMP_EMAIL_PROVIDER` 创建临时邮箱，支持逗号分隔的 provider 故障转移。
+4. `create_email_validation_code()` 请求发码；邮箱域名被拒或收信超时后自动换邮箱。
+5. `verify_email_validation_code()` 先提交原始 `XXX-XXX`，失败后去除分隔符重试，避开浏览器掩码输入框问题。
+6. Turnstile 按 YesCaptcha、CapSolver、EZCaptcha 顺序求解。
+7. `create_account()` 通过 Next.js server action 建号，随后从 RSC、Cookie 或密码登录回退中取得 SSO。
+8. `save_grok_token()` 将 `{email, sso, ts}` 写入 `tokens/grok/`。
+9. 使用 `--sub2api` 时调用 SUB2API SSO 转 OAuth 接口；远端转换失败时可经本机 Clash 代理执行 xAI Device Flow。
+
+常见调用：
+
+```bash
+python register_grok_http.py --count 1 --node auto
+python register_grok_http.py --count 5 --provider yyds,gptmail --rotate-every 5
+python register_grok_http.py --count 1 --sub2api --sub2api-group grok
+python upload_tokens.py grok
+```
+
+完整分析见 [`co0kie_grok/README.md`](co0kie_grok/README.md)。
 
 ## 4. 本地 WebUI 接口
 

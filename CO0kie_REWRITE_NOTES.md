@@ -1,8 +1,8 @@
 # CO0kie 项目改写说明
 
-当前版本：`26.7.13A`
+当前版本：`26.7.21A`
 
-本文档是本 fork 的改写记录和后续重构入口。原项目说明仍以 `README.md` 为准；更完整的结构分析见 `PROJECT_OVERVIEW.md`、`outlook/ANALYSIS.md`、`graph_refresh_token/README.md` 和 `outlook_create/README.md`。
+本文档是本 fork 的改写记录和后续重构入口。原项目说明仍以 `README.md` 为准；更完整的结构分析见 `PROJECT_OVERVIEW.md`、`outlook/ANALYSIS.md`、`graph_refresh_token/README.md`、`outlook_create/README.md` 和 `co0kie_grok/README.md`。
 
 ## 1. 当前改写目标
 
@@ -30,6 +30,7 @@
 | `outlook_create/FLOW_ANALYSIS.md` | 主项目 Outlook 注册流程、Graph RT 入池、节点轮换和验证码处理分析。 |
 | `outlook_create/UPDATE_2026-07-13.md` | 2026-07-13 上游更新、合并和本地整理记录。 |
 | `outlook_create/scripts/` | Outlook 注册主循环和 standalone 执行器的本地包装/检查脚本。 |
+| `co0kie_grok/` | 上游 Grok 注册、临时邮箱、Turnstile、SSO、OAuth 和下游集成知识库。 |
 
 ## 3. Graph refresh token 子项目
 
@@ -604,4 +605,52 @@ email----password----refresh_token----client_id
 | `outlook_create_Private/` | 本地私有协议注册机与私有分析文档，不进 Git。 |
 
 版本 `26.7.13A` 的重点是把“创建账号”和“读取邮箱”进一步拆开：`outlook_create/` 只关心注册/入池，`outlook/` 继续关心 Graph 邮箱读取和本地工作台。
+
+## 10. 2026-07-21 更新记录
+
+版本号：`26.7.21A`
+
+### 10.1 合并上游 Grok 更新
+
+本次将本地 `main` 更新到上游 `470ce80`，再合并 CO0kie fork 原有 Outlook、Graph RT 和文档提交。合并后的 Grok 增量主要包括：
+
+- `register_grok_http.py` 纯 HTTP Grok 注册入口。
+- `xconsole_client/` xAI gRPC-web、Next.js server action、会话和 OAuth 协议客户端。
+- `common/temp_email.py` 多临时邮箱 provider 和故障转移。
+- Grok SSO 转 SUB2API OAuth、webchat2api 注入和本机 OAuth 回退。
+- WebUI、三平台编排、端到端编排以及 Grok 相关回归测试。
+
+### 10.2 Grok 注册流程结论
+
+上游当前的默认 Grok 流程如下：
+
+1. 通过 Clash 探测能够加载 `accounts.x.ai` 注册页的出口节点。
+2. 使用 `curl_cffi` Chrome 指纹预热 `grok.com` 并取得 CF 会话。
+3. 加载注册页，动态提取 Next.js action 和 Turnstile sitekey。
+4. 创建临时邮箱，通过 xAI gRPC-web 发码并轮询验证码。
+5. 将 `XXX-XXX` 验证码作为字符串直接提交，失败时去除分隔符重试。
+6. 校验密码并按 YesCaptcha、CapSolver、EZCaptcha 顺序求解 Turnstile。
+7. 调用 Next.js server action 创建账号。
+8. 从 RSC/Cookie 链取得 SSO；失败时使用 CreateSession 密码登录回退。
+9. 将标准 SSO 写入 `tokens/grok/<email>.sso.json`。
+10. 按需转换为 xAI OAuth 凭据并导入 SUB2API，或将 SSO 注入 webchat2api。
+
+浏览器入口 `register_grok.py` 继续负责指定邮箱、Outlook 邮箱池、Graph RT、broker 取码、真实浏览器 CF 处理和协议回退等兼容能力。
+
+### 10.3 新增 `co0kie_grok/` 文档集
+
+| 文档 | 内容 |
+|---|---|
+| `co0kie_grok/README.md` | 快速开始和文档导航。 |
+| `co0kie_grok/ARCHITECTURE.md` | 两套注册实现、模块边界和数据流。 |
+| `co0kie_grok/HTTP_FLOW.md` | HTTP 注册状态机、重试和成功判定。 |
+| `co0kie_grok/BROWSER_FLOW.md` | 浏览器兼容流程、Outlook 取码和协议回退。 |
+| `co0kie_grok/CONFIGURATION.md` | CLI、环境变量、邮箱 provider 和下游配置。 |
+| `co0kie_grok/TOKENS_AND_INTEGRATIONS.md` | SSO、xAI OAuth、SUB2API 和 webchat2api。 |
+| `co0kie_grok/OPERATIONS.md` | WebUI、编排、测试、排障和维护检查项。 |
+| `co0kie_grok/SOURCE_MAP.md` | Grok 相关源码索引。 |
+
+### 10.4 当前版本边界
+
+`26.7.21A` 的重点是完成上游合并，并把 Grok 功能纳入 CO0kie 自有文档体系。本次整理现有实现，没有复制或分叉上游 Grok 源码；后续 Grok 定制内容统一放入 `co0kie_grok/`，通过适配层调用上游模块，降低再次同步上游时的冲突范围。
 
